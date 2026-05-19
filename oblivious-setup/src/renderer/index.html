@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>OBLIVIOUS Setup</title>
+  <link rel="stylesheet" href="./setup.css" />
+</head>
+<body>
+  <div id="unlock-layer">
+    <div class="panel unlock-panel">
+      <h1 id="unlock-title">OBLIVIOUS Setup</h1>
+      <p class="path-line" id="unlock-hint-line"></p>
+      <p class="path-line"><code id="unlock-path"></code></p>
+
+      <div id="panel-first-run" hidden>
+        <p class="hint" id="first-run-hint"></p>
+        <label class="lbl" for="fr-pass">Nuova passphrase</label>
+        <input id="fr-pass" type="password" autocomplete="new-password" />
+        <label class="lbl" for="fr-confirm">Conferma passphrase</label>
+        <input id="fr-confirm" type="password" autocomplete="new-password" />
+        <p id="fr-err" class="err" hidden></p>
+        <button id="fr-btn" type="button" class="btn primary">Crea vault</button>
+      </div>
+
+      <div id="panel-unlock" hidden>
+        <label class="lbl" for="unlock-pass">Passphrase</label>
+        <input id="unlock-pass" type="password" autocomplete="off" />
+        <p id="unlock-err" class="err" hidden></p>
+        <button id="unlock-btn" type="button" class="btn primary">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-layer" hidden>
+    <header class="topbar">
+      <h1 id="app-title">OBLIVIOUS SETUP</h1>
+      <p class="path-line muted"><strong>API Keys</strong> → <code id="primary-path"></code></p>
+      <p id="api-keys-hint" class="hint"></p>
+    </header>
+
+    <section class="panel">
+      <h2>API Keys</h2>
+      <div id="provider-rows"></div>
+    </section>
+
+    <section id="sec-pass-dev" class="panel" hidden>
+      <h2>Password DEV</h2>
+      <p class="hint">Ricifra solo il vault DEV (<code>secure-config/dev-local/config.enc</code>). Al prossimo avvio Oblivious Hub DEV chiederà la nuova passphrase.</p>
+      <label class="lbl" for="pw-dev-new">New DEV passphrase</label>
+      <input id="pw-dev-new" type="password" autocomplete="new-password" />
+      <label class="lbl" for="pw-dev-confirm">Confirm DEV passphrase</label>
+      <input id="pw-dev-confirm" type="password" autocomplete="new-password" />
+      <p id="pw-dev-msg" class="msg"></p>
+      <button id="pw-dev-save" class="btn primary">Save</button>
+    </section>
+
+    <section id="sec-pass-vps" class="panel" hidden>
+      <h2>Password VPS</h2>
+      <p class="hint">Ricifra solo il vault VPS nel workspace (<code>OBLIVIOUS-VPS/config/config.enc</code>). È lo stesso file del bundle: dopo sync/deploy sul server, Oblivious Hub VPS userà la nuova passphrase — senza copiare manualmente <code>config.enc</code>.</p>
+      <label class="lbl" for="pw-vps-new">New VPS passphrase</label>
+      <input id="pw-vps-new" type="password" autocomplete="new-password" />
+      <label class="lbl" for="pw-vps-confirm">Confirm</label>
+      <input id="pw-vps-confirm" type="password" autocomplete="new-password" />
+      <p id="pw-vps-msg" class="msg"></p>
+      <button id="pw-vps-save" class="btn primary">Save</button>
+    </section>
+
+    <footer class="footer">
+      <button id="btn-exit" class="btn ghost">Exit</button>
+    </footer>
+  </div>
+
+  <script src="./setup-renderer.js"></script>
+</body>
+</html>

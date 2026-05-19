@@ -1,0 +1,6 @@
+EXPORTS
+InitializeBridge
+CleanupBridge
+ProcessAIRequest
+IsBridgeHealthy
+GetLastError

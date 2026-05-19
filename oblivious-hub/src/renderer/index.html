@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+    <title>OBLIVIOUS AI</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!-- Custom titlebar (frame:false) -->
+    <header class="titlebar">
+      <div class="brand">
+        <h1 class="neon-magenta wave-title" data-testid="app-title" id="brand-title"
+            aria-label="OBLIVIOUS AI"></h1>
+        <div class="neural-status">
+          <span class="dot dot-online" id="neural-dot"></span>
+          <span class="neural-label" id="neural-label">NEURAL ENGINE BOOTING…</span>
+        </div>
+      </div>
+      <div class="win-controls">
+        <button class="win-btn" id="btn-settings" title="Settings" data-testid="win-settings">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19.14 12.94a7.49 7.49 0 0 0 .05-.94 7.49 7.49 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.65l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.45 7.45 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.43h-3.84a.5.5 0 0 0-.5.43l-.36 2.54a7.45 7.45 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.61.22L2.7 8.83a.5.5 0 0 0 .12.65l2.03 1.58a7.49 7.49 0 0 0-.05.94 7.49 7.49 0 0 0 .05.94L2.82 14.52a.5.5 0 0 0-.12.65l1.92 3.32a.5.5 0 0 0 .61.22l2.39-.96c.5.39 1.04.71 1.62.94l.36 2.54a.5.5 0 0 0 .5.43h3.84a.5.5 0 0 0 .5-.43l.36-2.54a7.45 7.45 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.65l-2.03-1.58zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
+        </button>
+        <button class="win-btn" id="btn-minimize" title="Minimize" data-testid="win-minimize">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M5 11h14v2H5z"/></svg>
+        </button>
+        <button class="win-btn" id="btn-maximize" title="Maximize" data-testid="win-maximize">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="2" d="M5 5h14v14H5z"/></svg>
+        </button>
+        <button class="win-btn win-btn-close" id="btn-close" title="Close" data-testid="win-close">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path stroke="currentColor" stroke-width="2" d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ORDERFLOW HEATMAP STRIP — 6 chips, one per tracked asset.
+         Each chip pulses with the master RGB clock and shows live
+         of_bias / of_confidence routed from the Python bridge. -->
+    <nav id="of-heatmap" class="of-heatmap" data-testid="of-heatmap">
+      <button class="of-chip" data-sym="XAUUSD" data-testid="of-chip-XAUUSD"><span class="of-sym">XAU</span><span class="of-arrow">●</span><span class="of-conf">—</span></button>
+      <button class="of-chip" data-sym="EURUSD" data-testid="of-chip-EURUSD"><span class="of-sym">EUR</span><span class="of-arrow">●</span><span class="of-conf">—</span></button>
+      <button class="of-chip" data-sym="GBPUSD" data-testid="of-chip-GBPUSD"><span class="of-sym">GBP</span><span class="of-arrow">●</span><span class="of-conf">—</span></button>
+      <button class="of-chip" data-sym="US100"  data-testid="of-chip-US100"><span class="of-sym">NDX</span><span class="of-arrow">●</span><span class="of-conf">—</span></button>
+      <button class="of-chip" data-sym="US500"  data-testid="of-chip-US500"><span class="of-sym">SPX</span><span class="of-arrow">●</span><span class="of-conf">—</span></button>
+      <button class="of-chip" data-sym="BTCUSD" data-testid="of-chip-BTCUSD"><span class="of-sym">BTC</span><span class="of-arrow">●</span><span class="of-conf">—</span></button>
+    </nav>
+
+
+    <main class="layout">
+      <!-- LEFT COLUMN -->
+      <aside class="col col-left">
+        <section class="panel" id="panel-account">
+          <header class="panel-h">
+            <h2 class="neon-magenta">ACCOUNT MATRIX</h2>
+            <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-3 0-9 1.5-9 4.5V20h18v-1.5c0-3-6-4.5-9-4.5z"/></svg>
+          </header>
+          <div class="panel-b kv-list" id="account-body"></div>
+        </section>
+
+        <section class="panel" id="panel-perf">
+          <header class="panel-h">
+            <h2 class="neon-magenta">PERFORMANCE METRICS</h2>
+            <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 17h2v-7H3v7zm4 0h2V7H7v10zm4 0h2v-4h-2v4zm4 0h2V9h-2v8zm4 0h2v-2h-2v2z"/></svg>
+          </header>
+          <div class="panel-b" id="perf-body"></div>
+        </section>
+
+        <section class="panel" id="panel-news">
+          <header class="panel-h">
+            <h2 class="neon-magenta">MARKET NEWS (REAL-TIME)</h2>
+            <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h13a3 3 0 0 1 3 3v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4zm2 2v12h12V7a1 1 0 0 0-1-1H6zm1 3h10v2H7V9zm0 4h10v2H7v-2zm0 4h7v2H7v-2z"/></svg>
+          </header>
+          <div class="panel-b news-table-wrap">
+            <table class="news-table">
+              <thead>
+                <tr><th>TIME</th><th>CUR</th><th>EVENT</th><th>IMPACT</th></tr>
+              </thead>
+              <tbody id="news-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </aside>
+
+      <!-- CENTER COLUMN -->
+      <section class="col col-center">
+        <section class="panel" id="panel-chart">
+          <header class="panel-h chart-h">
+            <h2 class="neon-magenta">TRADING COMMAND CENTER</h2>
+            <div class="chart-toolbar">
+              <div class="symbol-select">
+                <span class="tool-label">SYMBOL</span>
+                <select id="symbol-select" data-testid="symbol-select">
+                  <option>XAUUSD</option><option>EURUSD</option><option>GBPUSD</option>
+                  <option>US100</option><option>US500</option><option>BTCUSD</option>
+                </select>
+              </div>
+              <div class="tf-group" id="tf-group">
+                <button class="tf-btn" data-tf="1m">1m</button>
+                <button class="tf-btn" data-tf="5m">5m</button>
+                <button class="tf-btn" data-tf="15m">15m</button>
+                <button class="tf-btn" data-tf="1h">1h</button>
+                <button class="tf-btn active" data-tf="4h">4h</button>
+                <button class="tf-btn" data-tf="1D">1D</button>
+              </div>
+            </div>
+          </header>
+          <div class="panel-b chart-area">
+            <div class="chart-headline" id="chart-headline">
+              <span class="ch-sym">XAUUSD · 4h</span>
+              <span class="ch-ohlc" id="chart-ohlc">O — H — L — C —</span>
+            </div>
+            <!-- Chart container (lightweight-charts will mount here).
+                 The legacy <canvas> stays as a fallback overlay used only
+                 when bars[] aren't yet streamed by the EA. -->
+            <div id="price-chart" class="price-chart"></div>
+            <canvas id="price-canvas" class="price-canvas" hidden></canvas>
+            <div class="chart-status" id="chart-status">awaiting EA context push…</div>
+            <div class="chart-levels" id="chart-levels"></div>
+          </div>
+        </section>
+
+        <section class="panel" id="panel-positions">
+          <header class="panel-h">
+            <h2 class="neon-magenta">ACTIVE POSITIONS</h2>
+            <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2l2-6 4 12 3-9 2 5h5v2h-6l-2-5-3 9-4-12-1 4H3v0z"/></svg>
+          </header>
+          <div class="panel-b">
+            <table class="pos-table">
+              <thead>
+                <tr>
+                  <th>TICKET</th><th>SYMBOL</th><th>SIDE</th><th>LOTS</th>
+                  <th>ENTRY</th><th>CURRENT</th><th>P&amp;L</th>
+                  <th>SL / TP</th><th>TPSL STAGE</th><th>STRATEGY</th>
+                  <th>PROVIDER</th><th>ACTION</th>
+                </tr>
+              </thead>
+              <tbody id="positions-body">
+                <tr class="empty-row"><td colspan="12">No active positions reported by EA</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="three-feeds">
+          <section class="panel" id="panel-bookmap">
+            <header class="panel-h">
+              <h2 class="neon-magenta">BOOKMAP FEED (REAL-TIME)</h2>
+              <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 4h4v16H3V4zm6 4h4v12H9V8zm6-4h4v16h-4V4z"/></svg>
+            </header>
+            <div class="panel-b feed-wrap">
+              <table class="feed-table">
+                <thead><tr><th>TIME</th><th>EVENT</th></tr></thead>
+                <tbody id="bookmap-body"><tr class="empty-row"><td colspan="2">waiting for Bookmap WS :8081</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-mbo">
+            <header class="panel-h">
+              <h2 class="neon-magenta">MBO FEED (REAL-TIME)</h2>
+              <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 5h18v2H3V5zm0 4h12v2H3V9zm0 4h18v2H3v-2zm0 4h8v2H3v-2zm12 0h6v2h-6v-2z"/></svg>
+            </header>
+            <div class="panel-b feed-wrap">
+              <table class="feed-table">
+                <thead><tr><th>TIME</th><th>SYMBOL</th><th>BID / ASK</th><th>SIZE/LOTS</th><th>EVENT</th></tr></thead>
+                <tbody id="mbo-body"><tr class="empty-row"><td colspan="5">awaiting MBO levels</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel" id="panel-smartlog">
+            <header class="panel-h">
+              <h2 class="neon-magenta">NEURAL SMART LOG</h2>
+              <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a4 4 0 0 0-4 4v1H7a3 3 0 0 0-3 3v4a3 3 0 0 0 3 3h1v1a4 4 0 0 0 8 0v-1h1a3 3 0 0 0 3-3v-4a3 3 0 0 0-3-3h-1V6a4 4 0 0 0-4-4zm-2 4a2 2 0 1 1 4 0v12a2 2 0 1 1-4 0V6zM6 10v4h2v-4H6zm10 0v4h2v-4h-2z"/></svg>
+            </header>
+            <div class="panel-b feed-wrap">
+              <table class="feed-table">
+                <thead><tr><th>TIME</th><th>SOURCE</th><th>MESSAGE</th></tr></thead>
+                <tbody id="smartlog-body"><tr class="empty-row"><td colspan="3">awaiting hub telemetry</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </section>
+
+      <!-- RIGHT COLUMN -->
+      <aside class="col col-right">
+        <section class="panel" id="panel-engine">
+          <header class="panel-h">
+            <h2 class="neon-magenta">AI ENGINE STATUS</h2>
+            <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path fill="currentColor" d="M12 7l3 5-3 5-3-5z"/></svg>
+          </header>
+          <div class="panel-b kv-list" id="engine-body"></div>
+        </section>
+
+        <section class="panel" id="panel-providers">
+          <header class="panel-h">
+            <h2 class="neon-magenta">AI PROVIDERS</h2>
+            <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2L3 7l9 5 9-5-9-5zM3 12l9 5 9-5M3 17l9 5 9-5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+          </header>
+          <div class="panel-b">
+            <table class="prov-table">
+              <thead>
+                <tr><th>PROVIDER</th><th>STATUS</th><th>LATENCY</th><th>BALANCE</th><th>MODEL</th><th>ACTIONS</th></tr>
+              </thead>
+              <tbody id="providers-body"></tbody>
+            </table>
+            <div class="prov-buttons">
+              <button class="btn-cyan" id="btn-test-all" data-testid="test-all-btn">TEST ALL CONNECTIONS</button>
+              <button class="btn-cyan" id="btn-reconnect-all" data-testid="reconnect-all-btn">RECONNECT ALL</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="panel-edit-key">
+          <header class="panel-h">
+            <h2 class="neon-magenta">EDIT API KEY</h2>
+            <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M21 10h-8.35A5.5 5.5 0 1 0 7 17a5.49 5.49 0 0 0 5.65-4H14v3h3v-3h2v3h2v-6zM7 14.5A2.5 2.5 0 1 1 7 9.5a2.5 2.5 0 0 1 0 5z"/></svg>
+          </header>
+          <div class="panel-b key-form">
+            <label class="form-row">
+              <span class="form-lbl">Provider</span>
+              <select id="key-provider" data-testid="key-provider"></select>
+            </label>
+            <label class="form-row">
+              <span class="form-lbl">API Key</span>
+              <div class="key-input-wrap">
+                <input type="password" id="key-value" placeholder="••••••••••••••••" data-testid="key-input" />
+                <button class="key-eye" id="key-eye" type="button" title="Show / hide">
+                  <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 5C6 5 2 12 2 12s4 7 10 7 10-7 10-7-4-7-10-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z"/></svg>
+                </button>
+              </div>
+            </label>
+            <div class="form-actions">
+              <button class="btn-cyan-outline" id="btn-test-key" data-testid="test-key-btn">TEST CONNECTION</button>
+              <button class="btn-orange" id="btn-save-key" data-testid="save-key-btn">SAVE API KEY</button>
+            </div>
+            <div class="key-status" id="key-status"></div>
+          </div>
+        </section>
+
+        <section class="panel" id="panel-vps">
+          <header class="panel-h">
+            <h2 class="neon-magenta">VPS CONTROL CENTER <span class="badge-dev" id="vps-dev-badge">(DEV ONLY)</span></h2>
+            <svg class="panel-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v4h16V6H4zm12 1a1 1 0 1 1 0 2 1 1 0 0 1 0-2zM4 14h16a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2zm0 2v2h16v-2H4zm12 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/></svg>
+          </header>
+          <div class="panel-b">
+            <div class="vps-tabs">
+              <button class="vps-tab-btn active" data-vps-tab="access" data-testid="vps-access">VPS ACCESS SECURITY</button>
+              <button class="vps-tab-btn" data-vps-tab="ssh" data-testid="vps-ssh">SSH AUTOMATIC</button>
+              <button class="vps-tab-btn" data-vps-tab="mobile" data-testid="vps-mobile">MOBILE DEVICES</button>
+            </div>
+
+            <!-- TAB: VPS ACCESS SECURITY -->
+            <div class="vps-actions vps-tab-pane" data-vps-pane="access">
+              <div class="vps-row"><span>Generate VPS Unlock Key</span><button class="btn-cyan-outline" id="vps-gen-key" data-testid="vps-gen-key">GENERATE NEW KEY</button></div>
+              <div class="vps-row"><span>Rotate VPS Unlock Key</span><button class="btn-cyan-outline" id="vps-rotate" data-testid="vps-rotate">ROTATE KEY</button></div>
+              <div class="vps-row"><span>Revoke VPS Access</span><button class="btn-red-outline" id="vps-revoke" data-testid="vps-revoke">REVOKE ACCESS</button></div>
+              <div class="vps-row"><span>Bind VPS Fingerprint</span><button class="btn-cyan-outline" id="vps-bind" data-testid="vps-bind">BIND FINGERPRINT</button></div>
+              <div class="vps-row"><span>Generate Secure Runtime</span><button class="btn-cyan-outline" id="vps-runtime" data-testid="vps-runtime">GENERATE RUNTIME</button></div>
+              <div class="vps-row vps-status-row">
+                <span>VPS Status</span>
+                <span class="vps-status-pill" id="vps-status-pill">
+                  <span class="dot dot-down"></span><span>DISCONNECTED</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- TAB: SSH AUTOMATIC -->
+            <div class="vps-actions vps-tab-pane hidden" data-vps-pane="ssh">
+              <div class="vps-row"><span>SSH Host</span>
+                <input type="text" class="vps-input" id="ssh-host" placeholder="vps.example.com" data-testid="ssh-host" />
+              </div>
+              <div class="vps-row"><span>SSH Port</span>
+                <input type="number" class="vps-input" id="ssh-port" value="22" data-testid="ssh-port" />
+              </div>
+              <div class="vps-row"><span>SSH User</span>
+                <input type="text" class="vps-input" id="ssh-user" placeholder="root" data-testid="ssh-user" />
+              </div>
+              <div class="vps-row"><span>Private Key Path</span>
+                <input type="text" class="vps-input" id="ssh-key" placeholder="C:\Users\you\.ssh\id_ed25519" data-testid="ssh-key" />
+              </div>
+              <div class="vps-row"><span>Auto-deploy on push</span>
+                <label class="vps-toggle"><input type="checkbox" id="ssh-autodeploy" data-testid="ssh-autodeploy" /><span></span></label>
+              </div>
+              <div class="vps-row vps-status-row">
+                <span>SSH Tunnel</span>
+                <span class="vps-status-pill" id="ssh-status-pill">
+                  <span class="dot dot-down"></span><span>DISCONNECTED</span>
+                </span>
+              </div>
+              <div class="vps-row vps-row-cta">
+                <button class="btn-cyan-outline" id="ssh-test" data-testid="ssh-test">TEST CONNECTION</button>
+                <button class="btn-cyan-outline" id="ssh-deploy" data-testid="ssh-deploy">DEPLOY NOW</button>
+              </div>
+            </div>
+
+            <!-- TAB: MOBILE DEVICES -->
+            <div class="vps-actions vps-tab-pane hidden" data-vps-pane="mobile">
+              <div class="vps-row"><span>Pairing Mode</span>
+                <select class="vps-input" id="mobile-pair-mode" data-testid="mobile-pair-mode">
+                  <option value="vpn">VPN-only (recommended)</option>
+                  <option value="qr">One-shot QR token</option>
+                </select>
+              </div>
+              <div class="vps-row"><span>Token TTL (min)</span>
+                <input type="number" class="vps-input" id="mobile-ttl" value="15" data-testid="mobile-ttl" />
+              </div>
+              <div class="vps-row"><span>Max paired devices</span>
+                <input type="number" class="vps-input" id="mobile-max" value="2" data-testid="mobile-max" />
+              </div>
+              <div class="vps-row vps-row-cta">
+                <button class="btn-cyan-outline" id="mobile-generate" data-testid="mobile-generate">GENERATE PAIRING TOKEN</button>
+                <button class="btn-red-outline"  id="mobile-revoke-all" data-testid="mobile-revoke-all">REVOKE ALL DEVICES</button>
+              </div>
+              <div class="paired-list">
+                <div class="paired-list-h">PAIRED DEVICES</div>
+                <ul id="paired-devices-list" class="paired-ul" data-testid="paired-devices-list">
+                  <li class="paired-empty">— no paired devices —</li>
+                </ul>
+              </div>
+              <div class="vps-row vps-status-row">
+                <span>Mobile Bridge</span>
+                <span class="vps-status-pill" id="mobile-status-pill">
+                  <span class="dot dot-online"></span><span>CONNECTED</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="vps-disclaimer">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="#7fd17f" d="M12 2L3 6v6c0 5 3.8 9.4 9 10 5.2-.6 9-5 9-10V6l-9-4z"/></svg>
+              <span>Mobile access works only via private VPN.<br/>No public access allowed.</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <script src="vendor/lightweight-charts.js"></script>
+    <script src="chart.js"></script>
+    <script src="_browser_mock.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

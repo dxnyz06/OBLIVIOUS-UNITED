@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "customer": "E2E Roundtrip Test",
+  "issued_at": "2026-05-11T08:55:51.721Z",
+  "expires_at": "2028-01-01T00:00:00.000Z",
+  "device_id": "eefa976bc67a88f891dcd6039fb94657f72d3dd8406efbdfe35d5d4c8decb885",
+  "features": [
+    "predicted"
+  ],
+  "signature": "qhqaBI7cT5DXRjrOymNojH1ZR87jk2nTpIsSY/Rqwhs01VK7fAN3tOJKLpE/9kOqm3Z4JQJxBbXooB/85UbPuE8Hc+SKEG6BFXa0m9W3iRsGrLoss7bXvkyAkkgEi9STMkZlVgq/siW3gmS3qDpu/AslQw8Sdh0zjwfzqYjOf7RJIaaCVmRGfmdnUiCYI6oqYCBaOgIHs1FUvEe34V6pyqiOpLtiMaUiYKnBvM3D98vNqzEEcSyGyeEozSP1VqYXKU5WEoRl9gRebzPmSMiPHKhOTP5RS0ax5fp5PCsg26cHx9TlDp5Za5KS/2J3xWnMpffh8E6rGzoAmDW/7eW83A=="
+}

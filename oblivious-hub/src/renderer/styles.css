@@ -1,0 +1,961 @@
+/* OBLIVIOUS AI — renderer theme matching the PNG mockup. */
+
+/* ===== MASTER RGB CLOCK =====
+   One single animated hue drives every "neon" element so they all
+   change colour at the exact same instant (20s full rainbow cycle). */
+@property --neon-h {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 300deg;
+}
+@keyframes neon-cycle {
+  0%   { --neon-h: 0deg; }
+  100% { --neon-h: 360deg; }
+}
+:root {
+  animation: neon-cycle 20s linear infinite;
+}
+
+:root {
+  --bg:            #000;
+  --bg-elev:       #050507;
+  --panel:         #04040a;
+
+  /* All "neon" colours derive from the master clock so they pulse in sync */
+  --neon:          hsl(var(--neon-h), 100%, 60%);
+  --neon-strong:   hsl(var(--neon-h), 100%, 65%);
+  --neon-soft:     hsla(var(--neon-h), 100%, 60%, 0.55);
+  --neon-glow:     hsla(var(--neon-h), 100%, 60%, 0.45);
+  --neon-faint:    hsla(var(--neon-h), 100%, 60%, 0.18);
+  --neon-ghost:    hsla(var(--neon-h), 100%, 60%, 0.10);
+
+  --panel-border:  var(--neon-faint);
+  --panel-glow:    0 0 0 1px var(--neon-faint), 0 0 24px var(--neon-ghost) inset;
+
+  --text:          #e6e9f2;
+  --muted:         #6c7385;
+  --dim:           #4a5060;
+
+  /* Legacy semantic colors — kept ONLY for things that must stay fixed
+     (P&L green/red, impact pills HIGH/MED/LOW, side BUY/SELL). */
+  --green:         #20e070;
+  --green-soft:    #5af2a3;
+  --red:           #ff5577;
+  --orange:        #ff8a3d;
+  --yellow:        #ffd43d;
+  --blue:          #4d8dff;
+  --purple:        #9b4dff;
+
+  /* The old aliases now map onto the master neon so any leftover
+     reference still cycles with the others. */
+  --magenta:       var(--neon);
+  --magenta-soft:  var(--neon-strong);
+  --cyan:          var(--neon);
+  --cyan-soft:     var(--neon-strong);
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Inter", -apple-system, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  height: 100vh; width: 100vw;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Background: pure black, no grid */
+body { background: #000; }
+body::before { content: none; }
+
+button { font: inherit; cursor: pointer; }
+table { width: 100%; border-collapse: collapse; }
+input, select {
+  background: #0c0d18; color: var(--text);
+  border: 1px solid var(--neon-faint);
+  padding: 6px 8px; font-family: inherit; font-size: 12px; outline: none;
+  /* Strip OS appearance so we can fully drive focus colour from CSS */
+  -webkit-appearance: none;
+     -moz-appearance: none;
+          appearance: none;
+}
+/* Aggressive override for OS native focus rings on <select>:
+   - kills the pink/rose Windows accent ring
+   - replaces it with a master-clock RGB glow */
+input:focus, select:focus,
+input:focus-visible, select:focus-visible,
+select:active {
+  border-color: var(--neon) !important;
+  outline: 2px solid var(--neon) !important;
+  outline-offset: 0 !important;
+  box-shadow: 0 0 0 1px var(--neon), 0 0 10px var(--neon-glow) !important;
+  caret-color: var(--neon);
+}
+/* Custom dropdown chevron (since we removed the OS one with appearance:none) */
+select {
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(-45deg, transparent 50%, currentColor 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 22px !important;
+  color: var(--neon) !important;
+  text-shadow: 0 0 4px var(--neon-glow);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+/* Option list (dropdown popup) — Chromium will style options based on
+   parent select; we force RGB neon on each option. */
+select option, #symbol-select option, #key-provider option {
+  background: #04040a;
+  color: var(--neon) !important;
+  font-weight: 600;
+}
+select option:checked,
+select option:hover { background: var(--neon-ghost); color: #ffffff !important; }
+
+/* ===== GLOBAL SCROLLBARS — RGB synced everywhere ===== */
+* { scrollbar-width: thin; scrollbar-color: var(--neon) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--neon) !important;
+  border-radius: 4px;
+  box-shadow: 0 0 8px var(--neon-glow), 0 0 12px var(--neon-ghost) inset;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--neon-strong) !important; }
+
+/* Status pill text colour follows the dot inside it */
+.vps-status-pill, .eng-row .eng-status, .neural-status,
+.kv-pill, .kv-list .kv-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+}
+.vps-status-pill .dot.dot-online ~ span,
+.eng-status .dot.dot-online ~ span,
+.neural-status .dot.dot-online ~ span,
+.kv-pill .dot.dot-online ~ span { color: var(--green) !important; text-shadow: 0 0 4px rgba(32, 224, 112, 0.4); }
+
+.vps-status-pill .dot.dot-down ~ span,
+.eng-status .dot.dot-down ~ span,
+.neural-status .dot.dot-down ~ span,
+.kv-pill .dot.dot-down ~ span { color: var(--red) !important; text-shadow: 0 0 4px rgba(255, 85, 119, 0.4); }
+
+.vps-status-pill .dot.dot-warn ~ span,
+.eng-status .dot.dot-warn ~ span,
+.neural-status .dot.dot-warn ~ span,
+.kv-pill .dot.dot-warn ~ span { color: var(--orange) !important; }
+
+/* Green/red status text classes — locked colours, top of the cascade */
+.kv-green, .kv-v.kv-green, span.kv-green { color: var(--green) !important; text-shadow: 0 0 4px rgba(32, 224, 112, 0.4) !important; }
+.kv-red,   .kv-v.kv-red,   span.kv-red   { color: var(--red)   !important; text-shadow: 0 0 4px rgba(255, 85, 119, 0.4) !important; }
+
+/* Dot — locked colours, gap from text, pulse when connected */
+.dot {
+  display: inline-block;
+  width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 8px;          /* spacing from the label text */
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+.dot.dot-online {
+  background: var(--green) !important;
+  box-shadow: 0 0 6px var(--green) !important;
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+.dot.dot-down   { background: var(--red)    !important; box-shadow: 0 0 6px var(--red)    !important; }
+.dot.dot-warn   { background: var(--orange) !important; box-shadow: 0 0 6px var(--orange) !important; }
+@keyframes dot-pulse {
+  0%, 100% { transform: scale(1);   box-shadow: 0 0 6px var(--green); }
+  50%      { transform: scale(1.4); box-shadow: 0 0 14px var(--green), 0 0 22px rgba(32, 224, 112, 0.4); }
+}
+
+/* ===== STATUS PILLS — connected = green, disconnected = red (LOCKED) =====
+   These take precedence over any neon-clock cycling. The dot mirrors the
+   text colour automatically; no hover effect alters them. */
+.kv-list .kv-status-up,
+.kv-list span.kv-up,
+.eng-row .eng-up,
+.connected-pill,
+[data-status="CONNECTED"],
+[data-status="ONLINE"],
+.eng-status.up,
+span.kv-v.kv-green { color: var(--green) !important; }
+.kv-list .kv-status-up .dot,
+.eng-row .eng-up .dot,
+[data-status="CONNECTED"] .dot,
+[data-status="ONLINE"] .dot,
+.eng-status.up .dot { background: var(--green) !important; box-shadow: 0 0 6px var(--green) !important; }
+
+.kv-list .kv-status-down,
+.kv-list span.kv-down,
+.eng-row .eng-down,
+.disconnected-pill,
+[data-status="DISCONNECTED"],
+[data-status="DOWN"],
+[data-status="OFFLINE"],
+.eng-status.down { color: var(--red) !important; }
+.kv-list .kv-status-down .dot,
+.eng-row .eng-down .dot,
+[data-status="DISCONNECTED"] .dot,
+[data-status="DOWN"] .dot,
+[data-status="OFFLINE"] .dot,
+.eng-status.down .dot { background: var(--red) !important; box-shadow: 0 0 6px var(--red) !important; }
+/* Disable hover modifications on status pills */
+.eng-row:hover, .kv-list .kv-row:hover, [data-status]:hover {
+  background: transparent !important;
+  text-decoration: none !important;
+}
+
+/* Force the inline dot to vertically center next to status text.
+   The container itself stays a block-level flex (one row per status item). */
+.eng-row, .kv-list .kv-row, .vps-status-row {
+  display: flex !important;
+  align-items: center !important;
+}
+/* Inline elements that mix dot + text need inline-flex so the dot sits in line */
+.neural-status, .prov-status, td .prov-status, .src-pill, .vps-status-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+.dot { vertical-align: middle; flex: 0 0 auto; }
+
+/* ===== SMART LOG source pill — now RGB synced to master clock ===== */
+.src-pill, td .src-pill {
+  color: var(--neon) !important;
+  border-color: var(--neon) !important;
+  text-shadow: 0 0 3px var(--neon-glow);
+}
+
+/* ===== ACTIVE POSITIONS — flexes with the column, never crops the chart ===== */
+.col-center > #panel-positions { flex: 1 1 0; min-height: 130px; overflow: hidden; }
+#panel-positions .panel-b { overflow: auto; min-height: 0; }
+.titlebar {
+  -webkit-app-region: drag;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 14px 6px 18px;
+  height: 44px;
+  position: relative; z-index: 1;
+}
+.titlebar .brand { display: flex; align-items: baseline; gap: 16px; }
+.titlebar h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  font-style: italic;
+  display: inline-flex;
+  gap: 0;
+}
+/* Wave title — each letter pulses brightness with a staggered delay so a
+   "light-wave" appears to sweep across the word. The base colour is the
+   master-clock neon, and the peak adds a white glow. */
+.wave-title .wt-l {
+  display: inline-block;
+  color: var(--neon);
+  text-shadow:
+    0 0 4px var(--neon-glow),
+    0 0 12px var(--neon-glow);
+  animation: wave-letter 1.8s ease-in-out infinite;
+  animation-delay: calc(var(--wt-i, 0) * 0.10s);
+}
+.wave-title .wt-space { display: inline-block; width: 0.5em; }
+@keyframes wave-letter {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    color: var(--neon);
+    text-shadow: 0 0 4px var(--neon-glow), 0 0 12px var(--neon-glow);
+  }
+  30% {
+    transform: translateY(-3px);
+    color: #ffffff;
+    text-shadow:
+      0 0 6px  var(--neon),
+      0 0 18px var(--neon-glow),
+      0 0 36px var(--neon-glow);
+  }
+}
+.neon-magenta {
+  color: var(--neon);
+  text-shadow:
+    0 0 4px hsla(var(--neon-h), 100%, 60%, 0.6),
+    0 0 18px hsla(var(--neon-h), 100%, 60%, 0.35),
+    0 0 32px hsla(var(--neon-h), 100%, 60%, 0.2);
+}
+.neural-status { display: flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: 0.12em; color: var(--green); }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-online { background: var(--green); box-shadow: 0 0 6px var(--green), 0 0 12px var(--green); animation: dot-pulse 1.6s ease-in-out infinite; }
+.dot-warn   { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+.dot-down   { background: var(--red); box-shadow: 0 0 6px var(--red); }
+@keyframes dot-pulse { 50% { opacity: 0.4; } }
+
+.win-controls { display: flex; gap: 4px; -webkit-app-region: no-drag; }
+.win-btn {
+  width: 30px; height: 26px; background: transparent; border: none;
+  color: var(--muted); display: flex; align-items: center; justify-content: center;
+  border-radius: 3px; transition: background 0.15s, color 0.15s;
+}
+.win-btn:hover { background: var(--neon-ghost); color: var(--neon); }
+.win-btn-close:hover { background: rgba(255, 85, 119, 0.18); color: var(--red); }
+
+/* ===== LAYOUT =====
+   Fully fluid: the layout fills the viewport, every column fills the layout,
+   every panel fills its column. Each panel's body scrolls internally if its
+   own content overflows — the column itself never scrolls. */
+.layout {
+  display: grid;
+  grid-template-columns: 320px 1fr 320px;
+  gap: 10px; padding: 0 12px 12px;
+  height: calc(100vh - 44px - 36px);   /* titlebar 44px + OF heatmap strip 36px */
+  min-height: 0;
+  position: relative; z-index: 1;
+}
+.col {
+  display: flex; flex-direction: column; gap: 10px;
+  overflow: hidden;
+  min-height: 0;
+  height: 100%;
+}
+.col-center { gap: 10px; }
+/* Trading Command Center: grows to fill available height in center column */
+.col-center > #panel-chart { flex: 2 1 0; min-height: 240px; }
+.col-center > #panel-positions { flex: 1 1 0; min-height: 130px; }
+.col-center > .three-feeds { flex: 1 1 0; min-height: 0; }
+/* Side columns are no longer scrollable — panels share the height instead */
+.col-left, .col-right { overflow: hidden; }
+/* Side panels: small / form-like ones size to their natural content,
+   data-heavy ones (News / Providers / VPS) absorb the leftover height. */
+.col-left  > #panel-account,
+.col-left  > #panel-perf,
+.col-right > #panel-engine,
+.col-right > #panel-edit-key { flex: 0 0 auto; }
+.col-left  > #panel-news,
+.col-right > #panel-providers,
+.col-right > #panel-vps      { flex: 1 1 0; min-height: 140px; }
+
+/* Custom scrollbars */
+.col-left::-webkit-scrollbar, .col-right::-webkit-scrollbar,
+.panel-b::-webkit-scrollbar, .feed-wrap::-webkit-scrollbar { width: 6px; height: 6px; }
+.col-left::-webkit-scrollbar-thumb, .col-right::-webkit-scrollbar-thumb,
+.panel-b::-webkit-scrollbar-thumb, .feed-wrap::-webkit-scrollbar-thumb {
+  background: var(--neon);
+  box-shadow: 0 0 6px var(--neon-glow);
+  border-radius: 3px;
+}
+.col-left, .col-right, .panel-b, .feed-wrap { scrollbar-color: var(--neon) transparent; }
+
+/* ===== PANEL ===== */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  box-shadow: var(--panel-glow);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+/* Side-column panels stretch to fill their column (set in LAYOUT above)
+   and scroll their own body when content overflows. */
+.col-left  > .panel,
+.col-right > .panel { min-height: 0; }
+.panel-h {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--neon-faint);
+  flex: 0 0 auto;
+}
+.panel-h h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  font-style: italic;
+}
+.panel-icon { color: var(--neon); opacity: 0.9; filter: drop-shadow(0 0 4px var(--neon-glow)); }
+.panel-b { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 12px; }
+
+/* ===== KV LIST (Account Matrix / Engine Status) ===== */
+.kv-list .kv-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 0;
+  font-size: 12px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.03);
+}
+.kv-list .kv-row:last-child { border-bottom: none; }
+.kv-list .kv-k { color: var(--muted); font-weight: 500; }
+.kv-list .kv-v { color: var(--text); font-family: "Cascadia Mono", "Consolas", monospace; }
+.kv-list .kv-v.kv-green { color: var(--green); text-shadow: 0 0 4px rgba(32, 224, 112, 0.4); }
+.kv-list .kv-v.kv-red   { color: var(--red); }
+.kv-list .kv-v.kv-pill { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ===== PERFORMANCE METRICS bars ===== */
+.perf-row { display: grid; grid-template-columns: 110px 1fr 70px; align-items: center; gap: 8px; padding: 5px 0; font-size: 11.5px; }
+.perf-row .perf-lbl { color: var(--muted); }
+.perf-row .perf-bar {
+  height: 6px; background: rgba(255, 255, 255, 0.04);
+  border-radius: 3px; overflow: hidden; position: relative;
+  border: 1px solid var(--neon-faint);
+}
+/* All perf / confidence bars share the master RGB clock */
+.perf-row .perf-bar > span {
+  display: block; height: 100%;
+  background: var(--neon);
+  box-shadow: 0 0 8px var(--neon-glow), 0 0 14px var(--neon-ghost);
+}
+.perf-row .perf-bar.bar-blue > span,
+.perf-row .perf-bar.bar-red  > span { background: var(--neon); box-shadow: 0 0 8px var(--neon-glow); }
+.perf-row .perf-val { text-align: right; font-family: "Cascadia Mono", monospace; }
+.perf-row .perf-val.perf-pct { color: var(--muted); margin-right: 4px; }
+.perf-row .perf-val.val-green { color: var(--green); }
+.perf-row .perf-val.val-red   { color: var(--red); }
+
+/* ===== TABLES (news / positions / feeds / providers) ===== */
+.news-table, .pos-table, .feed-table, .prov-table {
+  font-size: 11px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+}
+.news-table th, .pos-table th, .feed-table th, .prov-table th {
+  text-align: left; font-weight: 600; color: var(--muted);
+  font-size: 10px; letter-spacing: 0.08em;
+  padding: 4px 6px; border-bottom: 1px solid var(--neon-faint);
+}
+.news-table td, .pos-table td, .feed-table td, .prov-table td {
+  padding: 5px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  vertical-align: middle;
+}
+.empty-row td { color: var(--dim); font-style: italic; text-align: center; padding: 14px 6px; }
+
+/* News impact badges — RGB synced to the master clock, opacity-graded
+   so HIGH still stands out without breaking the rainbow sync. */
+.impact-pill { display: inline-block; padding: 2px 7px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; border-radius: 2px; }
+.impact-HIGH {
+  color: var(--neon);
+  border: 1px solid var(--neon);
+  text-shadow: 0 0 5px var(--neon-glow), 0 0 12px var(--neon-glow);
+  box-shadow: 0 0 8px var(--neon-ghost) inset, 0 0 6px var(--neon-glow);
+}
+.impact-MEDIUM {
+  color: var(--neon);
+  border: 1px solid var(--neon-soft);
+  text-shadow: 0 0 4px var(--neon-glow);
+  opacity: 0.92;
+}
+.impact-LOW {
+  color: var(--neon);
+  border: 1px solid var(--neon-faint);
+  opacity: 0.78;
+}
+
+/* Positions side colors + close btn */
+.side-BUY  { color: var(--green); font-weight: 700; }
+.side-SELL { color: var(--red);   font-weight: 700; }
+.pnl-pos   { color: var(--green); }
+.pnl-neg   { color: var(--red); }
+.tpsl-pill { display: inline-block; padding: 2px 7px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; border: 1px solid; border-radius: 2px; }
+.tpsl-TP1   { color: var(--orange); border-color: var(--orange); }
+.tpsl-TP2   { color: var(--orange); border-color: var(--orange); }
+.tpsl-TP3   { color: var(--orange); border-color: var(--orange); }
+.tpsl-TPMAX { color: var(--red);    border-color: var(--red); }
+.tpsl-ENTRY { color: #00e7ff;       border-color: #00e7ff; }
+.btn-close-row {
+  background: transparent; border: 1px solid var(--red); color: var(--red);
+  padding: 3px 12px; font-size: 10px; letter-spacing: 0.08em; font-weight: 700;
+  border-radius: 2px;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-close-row:hover { background: var(--red); color: #fff; }
+
+/* ===== CHART ===== */
+.chart-h { gap: 12px; flex-wrap: nowrap; }
+.chart-toolbar { display: flex; align-items: center; gap: 14px; flex: 1; justify-content: flex-end; }
+.symbol-select { display: flex; align-items: center; gap: 6px; -webkit-app-region: no-drag; }
+.tool-label { font-size: 9.5px; letter-spacing: 0.1em; color: var(--muted); }
+#symbol-select {
+  background: transparent;
+  border: 1px solid var(--neon-soft);
+  padding: 4px 22px 4px 8px; font-size: 11px; color: var(--text);
+  box-shadow: 0 0 6px var(--neon-ghost);
+}
+.tf-group { display: flex; gap: 4px; }
+.tf-btn {
+  background: transparent; border: 1px solid transparent;
+  color: var(--muted); padding: 4px 9px; font-size: 11px;
+}
+.tf-btn:hover { color: var(--text); }
+.tf-btn.active {
+  border-color: var(--neon);
+  color: var(--neon);
+  box-shadow: 0 0 8px var(--neon-glow);
+  text-shadow: 0 0 6px var(--neon-glow);
+}
+.chart-actions { display: flex; gap: 4px; }
+.chart-act {
+  background: transparent; border: none; color: var(--muted);
+  padding: 4px 8px; font-size: 11px; display: flex; align-items: center; gap: 4px;
+}
+.chart-act:hover { color: var(--neon); }
+
+/* Chart panel — always fills the available panel space. The wrapper is
+   a flex column so chart-area + headline stretch to the available height
+   regardless of viewport size or window state (maximised / windowed). */
+#panel-chart { display: flex; flex-direction: column; min-height: 0; }
+#panel-chart > .panel-h { flex: 0 0 auto; }
+.chart-area {
+  position: relative;
+  padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Hidden — chart shows only the price grid/canvas, no extra text */
+.chart-headline { display: none; }
+.chart-headline .ch-sym { color: var(--text); }
+.chart-headline .ch-ohlc { color: var(--muted); }
+.price-canvas {
+  width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: block;
+}
+/* lightweight-charts requires the host to have a real, measured size and
+   creates an internal <div> that is positioned with `position:absolute`
+   inside the host. We give the host a guaranteed size by absolutely
+   filling its parent (.chart-area), and the lib's autoSize takes over. */
+.price-chart {
+  position: absolute;
+  inset: 0;
+}
+.chart-area > .price-chart { /* fallback rule kept for explicit child */ }
+.chart-area { position: relative; }
+.price-chart > div { width: 100%; height: 100%; }
+.price-chart > div { width: 100%; height: 100%; }
+.chart-status { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--dim); font-style: italic; }
+.chart-levels { position: absolute; right: 12px; top: 40px; bottom: 12px; width: 80px; pointer-events: none; font-family: "Cascadia Mono", monospace; font-size: 10px; }
+.chart-level { position: absolute; right: 0; padding: 1px 5px; border-radius: 2px; }
+.chart-level.level-TPMAX  { color: var(--red);    background: rgba(255, 85, 119, 0.15); border-left: 2px solid var(--red); }
+.chart-level.level-TP3    { color: var(--red);    background: rgba(255, 85, 119, 0.12); border-left: 2px solid var(--red); }
+.chart-level.level-TP2    { color: var(--red);    background: rgba(255, 85, 119, 0.10); border-left: 2px solid var(--red); }
+.chart-level.level-TP1    { color: var(--red);    background: rgba(255, 85, 119, 0.08); border-left: 2px solid var(--red); }
+.chart-level.level-ENTRY  { color: var(--text);   background: rgba(255, 255, 255, 0.05); border-left: 2px solid #888; }
+.chart-level.level-SL     { color: var(--blue);   background: rgba(77, 141, 255, 0.10); border-left: 2px solid var(--blue); }
+
+/* ===== THREE FEEDS row ===== */
+.three-feeds { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; min-height: 0; }
+.three-feeds .panel { min-height: 0; }
+.feed-wrap { padding: 4px 10px; }
+
+/* ===== PROVIDERS panel ===== */
+.prov-table td { padding: 6px 4px; }
+.prov-status { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; letter-spacing: 0.06em; color: var(--green); }
+.prov-status.down { color: var(--red); }
+.prov-status.idle { color: var(--muted); }
+.prov-lat { font-family: "Cascadia Mono", monospace; color: var(--text); }
+.prov-balance { font-family: "Cascadia Mono", monospace; font-size: 10.5px; }
+.prov-balance.dim { color: var(--dim); opacity: 0.55; }
+.prov-actions { display: flex; gap: 6px; justify-content: center; }
+.prov-actions .act-lock {
+  background: transparent; border: none; color: var(--muted);
+  padding: 0; cursor: pointer; transition: color 0.15s, transform 0.15s;
+}
+.prov-actions .act-lock:hover { color: var(--neon); transform: scale(1.1); }
+/* 🔒 LOCKED — key valid + healthy → bright RGB glow */
+.prov-actions .act-lock.has-key {
+  color: var(--neon);
+  text-shadow: 0 0 4px var(--neon-glow);
+  filter: drop-shadow(0 0 4px var(--neon-glow));
+}
+/* 🔓 OPEN — no key → dim grey */
+.prov-actions .act-lock.open { color: var(--dim); }
+.prov-actions .act-lock.open:hover { color: var(--neon); }
+/* ⚠️ WARNING — key present but test failed → fixed orange */
+.prov-actions .act-lock.warn {
+  color: var(--orange);
+  filter: drop-shadow(0 0 4px rgba(255, 138, 61, 0.55));
+  animation: warn-pulse 1.4s ease-in-out infinite;
+}
+.prov-actions .act-lock.warn:hover { color: var(--orange); }
+@keyframes warn-pulse { 50% { opacity: 0.55; } }
+.prov-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+
+/* ===== BUTTONS ===== */
+.btn-cyan {
+  background: transparent; color: var(--neon);
+  border: 1px solid var(--neon);
+  padding: 8px 10px; font-size: 10.5px; letter-spacing: 0.1em; font-weight: 700;
+  border-radius: 2px;
+  text-shadow: 0 0 4px var(--neon-glow);
+  box-shadow: 0 0 8px var(--neon-ghost) inset;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.btn-cyan:hover { background: var(--neon-ghost); box-shadow: 0 0 12px var(--neon-glow); }
+.btn-cyan-outline {
+  background: transparent; color: var(--neon);
+  border: 1px solid var(--neon);
+  padding: 5px 10px; font-size: 10px; letter-spacing: 0.08em; font-weight: 700;
+}
+.btn-cyan-outline:hover { background: var(--neon-ghost); }
+/* SAVE API KEY — was orange, now RGB synced to master clock */
+.btn-orange {
+  background: transparent; color: var(--neon);
+  border: 1px solid var(--neon);
+  padding: 8px 10px; font-size: 10.5px; letter-spacing: 0.1em; font-weight: 700;
+  text-shadow: 0 0 4px var(--neon-glow);
+  box-shadow: 0 0 8px var(--neon-ghost) inset;
+}
+.btn-orange:hover { background: var(--neon-ghost); box-shadow: 0 0 12px var(--neon-glow); }
+/* REVOKE ACCESS — was red, now RGB synced too (semantic clarity provided
+   by the explicit "REVOKE ACCESS" label, not the colour) */
+.btn-red-outline {
+  background: transparent; color: var(--neon);
+  border: 1px solid var(--neon);
+  padding: 5px 10px; font-size: 10px; letter-spacing: 0.08em; font-weight: 700;
+  text-shadow: 0 0 4px var(--neon-glow);
+}
+.btn-red-outline:hover { background: var(--neon-ghost); }
+
+/* ===== EDIT API KEY FORM ===== */
+.key-form { display: flex; flex-direction: column; gap: 10px; }
+.form-row { display: flex; flex-direction: column; gap: 4px; }
+.form-lbl { font-size: 10px; letter-spacing: 0.06em; color: var(--muted); }
+.key-input-wrap { position: relative; }
+.key-input-wrap input { width: 100%; padding-right: 32px; font-family: "Cascadia Mono", monospace; letter-spacing: 0.04em; }
+.key-eye { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: var(--muted); padding: 4px; }
+.key-eye:hover { color: var(--neon); }
+.form-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.key-status { font-size: 10.5px; min-height: 14px; font-family: "Cascadia Mono", monospace; }
+.key-status.ok  { color: var(--green); }
+.key-status.err { color: var(--red); }
+
+/* ===== VPS CONTROL CENTER ===== */
+.badge-dev { color: var(--dim); font-size: 9.5px; font-weight: 500; font-style: italic; margin-left: 6px; }
+.vps-tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; margin-bottom: 10px; }
+.vps-tab-btn {
+  background: transparent; color: var(--neon); border: 1px solid var(--neon);
+  padding: 5px 6px; font-size: 9px; letter-spacing: 0.06em; font-weight: 700;
+  border-radius: 2px; line-height: 1.2;
+}
+.vps-tab-btn:hover, .vps-tab-btn.active { background: var(--neon-ghost); box-shadow: 0 0 6px var(--neon-glow); }
+
+/* VPS tab panes — only one visible at a time */
+.vps-tab-pane.hidden { display: none !important; }
+.vps-input {
+  background: #0c0d18; color: var(--text);
+  border: 1px solid var(--neon-faint);
+  padding: 4px 8px; font-size: 11px; font-family: inherit; min-width: 160px;
+  outline: none;
+}
+.vps-input:focus { border-color: var(--neon); box-shadow: 0 0 0 1px var(--neon-glow); }
+
+/* Toggle switch */
+.vps-toggle { position: relative; display: inline-block; width: 32px; height: 16px; }
+.vps-toggle input { opacity: 0; width: 0; height: 0; }
+.vps-toggle span {
+  position: absolute; cursor: pointer; inset: 0;
+  background: rgba(255,255,255,0.06); border: 1px solid var(--neon-faint);
+  border-radius: 16px; transition: 0.2s;
+}
+.vps-toggle span::before {
+  position: absolute; content: ""; height: 10px; width: 10px;
+  left: 2px; top: 2px; background: var(--muted); border-radius: 50%;
+  transition: 0.2s;
+}
+.vps-toggle input:checked + span { background: var(--neon-ghost); border-color: var(--neon); }
+.vps-toggle input:checked + span::before { transform: translateX(15px); background: var(--neon); box-shadow: 0 0 6px var(--neon-glow); }
+
+/* Mobile Devices — paired devices list */
+.vps-row-cta { display: flex; gap: 8px; justify-content: flex-end; padding: 6px 12px 0; }
+.paired-list { padding: 8px 12px; border-top: 1px dashed var(--neon-faint); margin-top: 6px; }
+.paired-list-h { font-size: 10px; letter-spacing: 0.12em; color: var(--muted); padding-bottom: 4px; }
+.paired-ul { list-style: none; padding: 0; margin: 0; }
+.paired-ul li { padding: 4px 0; font-size: 11.5px; display: flex; justify-content: space-between; }
+.paired-ul li.paired-empty { color: var(--muted); font-style: italic; justify-content: center; }
+.vps-actions { display: flex; flex-direction: column; gap: 7px; }
+.vps-row {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; font-size: 11px;
+}
+.vps-row > span:first-child { color: var(--muted); }
+.vps-status-row .vps-status-pill { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-weight: 700; font-size: 10px; letter-spacing: 0.08em; }
+.vps-disclaimer {
+  display: flex; gap: 8px; align-items: flex-start;
+  margin-top: 12px; padding: 8px;
+  border: 1px solid rgba(32, 224, 112, 0.18);
+  border-radius: 3px;
+  font-size: 10.5px; color: var(--green-soft); line-height: 1.45;
+}
+
+/* Smart-log source pill — semantic colours, NOT synced (each source distinct) */
+.src-pill { display: inline-block; padding: 1px 5px; font-size: 9.5px; font-weight: 700; border: 1px solid; border-radius: 2px; }
+.src-AI   { color: #00e7ff;   border-color: #00e7ff; }
+.src-EX4  { color: var(--orange);  border-color: var(--orange); }
+.src-MBO  { color: #ff3df0;   border-color: #ff3df0; }
+.src-MT4  { color: var(--green);   border-color: var(--green); }
+.src-Hub  { color: var(--purple);  border-color: var(--purple); }
+.src-EA   { color: var(--green);   border-color: var(--green); }
+
+/* ===== CHART ACTION POPOVERS (Indicators / Templates / Alert / Replay) ===== */
+.chart-popover {
+  position: fixed;
+  min-width: 220px;
+  max-width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--neon);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px var(--neon-faint), 0 0 24px var(--neon-ghost), 0 6px 18px rgba(0,0,0,0.55);
+  z-index: 9999;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  color: var(--text);
+  -webkit-app-region: no-drag;
+  animation: pop-in 0.12s ease-out;
+}
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.chart-popover .pop-h {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  font-weight: 700;
+  color: var(--neon);
+  border-bottom: 1px solid var(--neon-faint);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  text-shadow: 0 0 4px var(--neon-glow);
+}
+.chart-popover .pop-body { display: flex; flex-direction: column; gap: 5px; }
+.chart-popover .pop-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 3px 0;
+  background: transparent; border: none; color: var(--text); font-size: 11px;
+  cursor: pointer; text-align: left;
+}
+.chart-popover .pop-row:hover { color: var(--neon); }
+.chart-popover .pop-row input[type="text"],
+.chart-popover .pop-row input[type="number"],
+.chart-popover .pop-row select {
+  background: #0c0d18; color: var(--text);
+  border: 1px solid var(--neon-faint);
+/* Highlighted "up/down" inline */
+.txt-up   { color: var(--green); }
+.txt-down { color: var(--red); }
+.txt-warn { color: var(--orange); }
+
+  padding: 4px 6px; font-size: 11px; font-family: inherit;
+  min-width: 110px; outline: none;
+}
+.chart-popover .pop-row input:focus,
+.chart-popover .pop-row select:focus {
+  border-color: var(--neon);
+  box-shadow: 0 0 0 1px var(--neon-glow);
+}
+.chart-popover .pop-row input[type="checkbox"] { accent-color: var(--neon); }
+.chart-popover .pop-foot {
+  display: flex; gap: 6px; margin-top: 10px;
+  padding-top: 8px; border-top: 1px solid var(--neon-faint);
+}
+.chart-popover .pop-foot .btn-cyan-outline { flex: 1; font-size: 10px; padding: 6px 8px; }
+.chart-popover .pop-list { margin-top: 8px; max-height: 140px; overflow: auto; }
+.chart-popover .pop-empty { color: var(--dim); font-style: italic; font-size: 10.5px; padding: 6px 0; }
+.chart-popover .pop-alert { padding: 4px 0; border-bottom: 1px dashed var(--neon-faint); }
+.chart-popover .pop-rm { color: var(--red); cursor: pointer; padding: 0 6px; }
+.chart-popover .pop-rm:hover { color: #fff; }
+.chart-popover .pop-info { font-size: 10.5px; color: var(--muted); line-height: 1.4; }
+.chart-popover .pop-pick { width: 100%; }
+
+
+/* ─────────────────────────────────────────────────────────────────
+   Orderflow signal tags (BOOKMAP FEED) + DOM ladder (MBO FEED)
+   ALL elements share the SAME `--neon-h` master clock hue — no
+   per-class offsets — so every tag, ladder cell and bias arrow
+   pulses in perfect sync with the panel borders/text/scrollbars.
+   Differentiation is by LETTERS (ICE/ABS/SWP/EXH) and POSITION
+   (left column = bid, right column = ask), not by colour.
+   ───────────────────────────────────────────────────────────────── */
+.sig-tag {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border: 1px solid currentColor;
+  color: hsl(var(--neon-h), 100%, 65%);
+  text-shadow:
+    0 0 4px  hsla(var(--neon-h), 100%, 60%, 0.65),
+    0 0 10px hsla(var(--neon-h), 100%, 60%, 0.35);
+  background: hsla(var(--neon-h), 100%, 60%, 0.08);
+}
+/* All sig-tag variants share the same hue — class kept only for the
+   :hover / tooltip hooks. */
+.sig-tag.sig-iceberg,
+.sig-tag.sig-absorption,
+.sig-tag.sig-sweep,
+.sig-tag.sig-exhaustion,
+.sig-tag.sig-buy,
+.sig-tag.sig-sell,
+.sig-tag.sig-raw { /* no override — inherit master hue */ }
+
+/* MBO FEED — bid/ask ladder, all RGB-clock-driven */
+#mbo-body td.dim,
+.mbo-decision-row .dim { color: var(--muted); }
+.kv-cyan,
+.kv-purple {
+  color: hsl(var(--neon-h), 100%, 70%);
+  text-shadow: 0 0 6px hsla(var(--neon-h), 100%, 60%, 0.5);
+}
+/* Bias label inside DECISION rows — always RGB-clock-driven, never
+   green/red, so it pulses simultaneously with the surrounding panel. */
+.bias-rgb {
+  color: hsl(var(--neon-h), 100%, 70%) !important;
+  text-shadow: 0 0 6px hsla(var(--neon-h), 100%, 55%, 0.5) !important;
+  font-weight: 600;
+}
+.mbo-decision-row td {
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: hsl(var(--neon-h), 100%, 68%);
+}
+.mbo-decision-row .kv-green,
+.mbo-decision-row .kv-red {
+  color: hsl(var(--neon-h), 100%, 68%);
+  text-shadow: 0 0 6px hsla(var(--neon-h), 100%, 60%, 0.5);
+}
+.mbo-head-row td {
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.dom-cell {
+  position: relative;
+  padding: 1px 6px;
+  min-width: 90px;
+}
+.dom-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: block;
+  opacity: 0.20;
+  pointer-events: none;
+  border-radius: 1px;
+}
+.dom-bar.bar-bid {
+  left: 0;
+  background: linear-gradient(90deg,
+    hsla(var(--neon-h), 100%, 55%, 0.55),
+    hsla(var(--neon-h), 100%, 55%, 0.0));
+}
+.dom-bar.bar-ask {
+  right: 0;
+  background: linear-gradient(270deg,
+    hsla(var(--neon-h), 100%, 55%, 0.55),
+    hsla(var(--neon-h), 100%, 55%, 0.0));
+}
+.dom-cell .dom-px {
+  position: relative;
+  z-index: 1;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--neon-h), 100%, 68%);
+  text-shadow: 0 0 4px hsla(var(--neon-h), 100%, 55%, 0.35);
+}
+/* bid/ask kept as class hooks but share the master hue */
+.dom-bid .dom-px,
+.dom-ask .dom-px { color: hsl(var(--neon-h), 100%, 68%); }
+.dom-q {
+  font-variant-numeric: tabular-nums;
+  color: hsla(var(--neon-h), 100%, 75%, 0.78);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   OF HEATMAP STRIP — 6 asset chips below the titlebar
+   All chips share the SAME master `--neon-h` hue (no per-asset
+   offset). Fill intensity scales with `--of-conf` (0–100) so the
+   user spots the strongest edge by BRIGHTNESS, not by colour.
+   Bias arrow is the ONLY non-RGB cue (▲▼●) for instant readability.
+   ───────────────────────────────────────────────────────────────── */
+.of-heatmap {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  padding: 4px 12px;
+  height: 36px;
+  box-sizing: border-box;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0.10) 100%
+  );
+  border-bottom: 1px solid hsla(var(--neon-h), 100%, 60%, 0.18);
+}
+.of-chip {
+  --of-conf: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  min-height: 22px;
+  font-family: inherit;
+  font-size: 10.5px;
+  letter-spacing: 0.7px;
+  font-weight: 600;
+  color: hsl(var(--neon-h), 100%, 78%);
+  background: linear-gradient(
+    90deg,
+    hsla(var(--neon-h), 100%, 50%, calc(var(--of-conf) / 220)) 0%,
+    hsla(var(--neon-h), 100%, 50%, calc(var(--of-conf) / 600)) 100%
+  );
+  border: 1px solid hsla(var(--neon-h), 100%, 60%, 0.55);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+  box-shadow:
+    0 0 6px  hsla(var(--neon-h), 100%, 60%, calc(var(--of-conf) / 250)),
+    inset 0 0 8px hsla(var(--neon-h), 100%, 60%, calc(var(--of-conf) / 400));
+}
+.of-chip:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 10px hsla(var(--neon-h), 100%, 60%, 0.6),
+    inset 0 0 12px hsla(var(--neon-h), 100%, 60%, 0.35);
+}
+.of-chip.is-active {
+  outline: 1px solid hsla(var(--neon-h), 100%, 75%, 0.9);
+  outline-offset: 1px;
+}
+.of-chip .of-sym {
+  font-weight: 700;
+  text-shadow: 0 0 4px hsla(var(--neon-h), 100%, 60%, 0.5);
+}
+.of-chip .of-arrow {
+  font-size: 12px;
+  line-height: 1;
+  width: 12px;
+  text-align: center;
+  /* Bias arrow inherits the master hue too — visual cue is the
+     glyph (▲ ▼ ●) only, never a different colour. */
+  color: hsl(var(--neon-h), 100%, 80%);
+  text-shadow: 0 0 6px hsla(var(--neon-h), 100%, 60%, 0.6);
+}
+.of-chip[data-bias="neutral"] .of-arrow { opacity: 0.55; }
+.of-chip .of-conf {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.92;
+  min-width: 30px;
+  text-align: right;
+}
+.of-chip.is-stale { opacity: 0.45; filter: grayscale(0.4); }
+
+

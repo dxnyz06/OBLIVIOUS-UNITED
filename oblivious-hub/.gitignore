@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+keyvault.dat
+*.log
+.DS_Store
+.cache/

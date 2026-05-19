@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>Passphrase</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#0b0d10; color:#e6e9ee; font-family:'Segoe UI',system-ui,sans-serif; }
+    .wrap { padding:20px 22px; box-sizing:border-box; }
+    h1 { margin:0 0 8px 0; font-size:13px; color:#9aa4b2; font-weight:600; }
+    .body { font-size:13px; color:#cbd5dc; margin-bottom:14px; white-space:pre-wrap; }
+    input[type=password] { width:100%; box-sizing:border-box; padding:10px 12px; font-size:14px;
+      background:#1a1d21; color:#e6e9ee; border:1px solid #2a2e34; border-radius:6px; outline:none; }
+    input:focus { border-color:#3b82f6; }
+    .row { display:flex; gap:8px; margin-top:14px; }
+    button { flex:1; padding:9px 12px; font-size:13px; font-weight:600;
+      background:#1f2937; color:#e6e9ee; border:1px solid #2a2e34; border-radius:6px; cursor:pointer; }
+    button.primary { background:#2563eb; border-color:#3b82f6; }
+    button:hover { filter:brightness(1.12); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="titleEl"></h1>
+  <div id="bodyEl" class="body"></div>
+  <input id="pw" type="password" autofocus autocomplete="off" />
+  <div class="row">
+    <button id="ok" class="primary">OK</button>
+    <button id="cancel">Cancel</button>
+  </div>
+</div>
+<script>
+  const p = new URLSearchParams(window.location.search);
+  document.getElementById("titleEl").textContent = p.get("t") || "";
+  document.getElementById("bodyEl").textContent = p.get("b") || "";
+  const pw = document.getElementById("pw");
+  document.getElementById("ok").addEventListener("click", () => {
+    window.pwdModal.submit(pw.value).then(() => {});
+  });
+  document.getElementById("cancel").addEventListener("click", () => {
+    window.pwdModal.submit("").then(() => {});
+  });
+  pw.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") document.getElementById("ok").click();
+  });
+</script>
+</body>
+</html>

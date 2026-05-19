@@ -1,0 +1,34 @@
+{
+  "appId": "com.oblivious.setup.vps",
+  "extraMetadata": {
+    "main": "src/main-vps.js"
+  },
+  "productName": "OBLIVIOUS SETUP VPS",
+  "copyright": "Copyright OBLIVIOUS",
+  "directories": {
+    "output": "dist-vps",
+    "buildResources": "assets"
+  },
+  "files": [
+    "src/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "../oblivious-hub/src/services/KeyVault.js",
+      "to": "hub-services/KeyVault.js"
+    },
+    {
+      "from": "../oblivious-hub/src/services/providers",
+      "to": "hub-services/providers",
+      "filter": ["**/*"]
+    }
+  ],
+  "win": {
+    "target": [{ "target": "dir", "arch": ["x64"] }],
+    "artifactName": "OBLIVIOUS-SETUP-VPS-${version}.${ext}",
+    "signAndEditExecutable": false
+  },
+  "asar": true,
+  "asarUnpack": []
+}

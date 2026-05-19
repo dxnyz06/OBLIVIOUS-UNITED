@@ -1,0 +1,34 @@
+{
+  "appId": "com.oblivious.setup.dev",
+  "extraMetadata": {
+    "main": "src/main-dev.js"
+  },
+  "productName": "OBLIVIOUS SETUP DEV",
+  "copyright": "Copyright OBLIVIOUS",
+  "directories": {
+    "output": "dist-dev",
+    "buildResources": "assets"
+  },
+  "files": [
+    "src/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "../oblivious-hub/src/services/KeyVault.js",
+      "to": "hub-services/KeyVault.js"
+    },
+    {
+      "from": "../oblivious-hub/src/services/providers",
+      "to": "hub-services/providers",
+      "filter": ["**/*"]
+    }
+  ],
+  "win": {
+    "target": [{ "target": "dir", "arch": ["x64"] }],
+    "artifactName": "OBLIVIOUS-SETUP-DEV-${version}.${ext}",
+    "signAndEditExecutable": false
+  },
+  "asar": true,
+  "asarUnpack": []
+}

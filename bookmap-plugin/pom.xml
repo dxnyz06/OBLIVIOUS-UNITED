@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.oblivious</groupId>
+    <artifactId>oblivious-bookmap-bridge</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>OBLIVIOUS Bookmap Bridge</name>
+    <description>Bookmap Global+ add-on that streams MBO / iceberg / stop-run / imbalance events to the OBLIVIOUS Electron Hub over a local WebSocket on 127.0.0.1:8081.</description>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- bookmapHome resolution order:
+             1. -DbookmapHome=... on the cmd line (highest priority)
+             2. profile "bookmap-env" picks up the BOOKMAP_HOME env var
+             3. profile "bookmap-local" falls back to ${project.basedir}
+                so dropping the Bookmap SDK jars into bookmap-plugin/lib/
+                is enough — no env var required. -->
+        <bookmapHome>${project.basedir}</bookmapHome>
+    </properties>
+
+    <profiles>
+        <profile>
+            <id>bookmap-env</id>
+            <activation>
+                <property>
+                    <name>env.BOOKMAP_HOME</name>
+                </property>
+            </activation>
+            <properties>
+                <bookmapHome>${env.BOOKMAP_HOME}</bookmapHome>
+            </properties>
+        </profile>
+    </profiles>
+
+    <dependencies>
+        <!-- Bookmap Add-on SDK — installed locally with Bookmap.
+             We use the system scope so we don't depend on any private
+             Maven repo. Update the bookmap-api version filename if your
+             Bookmap install ships a different one. -->
+        <dependency>
+            <groupId>com.bookmap.api</groupId>
+            <artifactId>api-core</artifactId>
+            <version>local</version>
+            <scope>system</scope>
+            <systemPath>${bookmapHome}/lib/bm-l1api.jar</systemPath>
+        </dependency>
+        <dependency>
+            <groupId>com.bookmap.api</groupId>
+            <artifactId>api-simplified</artifactId>
+            <version>local</version>
+            <scope>system</scope>
+            <!-- Bookmap 7.7.0+ ships this as bm-simplified-api-wrapper.jar.
+                 Older builds (≤7.5) called it bm-simplified-api.jar.  Drop
+                 either name into bookmap-plugin/lib/ — we look for both. -->
+            <systemPath>${bookmapHome}/lib/bm-simplified-api-wrapper.jar</systemPath>
+        </dependency>
+
+        <!-- Java-WebSocket: pure-Java WS server, no native bits. -->
+        <dependency>
+            <groupId>org.java-websocket</groupId>
+            <artifactId>Java-WebSocket</artifactId>
+            <version>1.5.7</version>
+        </dependency>
+
+        <!-- Lightweight JSON serialization. -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.11.0</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>oblivious-bookmap-bridge-${project.version}</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals><goal>shade</goal></goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <minimizeJar>false</minimizeJar>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

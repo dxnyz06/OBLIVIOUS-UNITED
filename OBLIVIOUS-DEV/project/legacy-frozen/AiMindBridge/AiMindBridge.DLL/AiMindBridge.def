@@ -1,0 +1,7 @@
+LIBRARY AiMindBridge
+
+EXPORTS
+    AiBridge_Query          @1
+    AiBridge_IsConnected    @2
+    AiBridge_Version        @3
+    AiBridge_GetNewsStatus  @4

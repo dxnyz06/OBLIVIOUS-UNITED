@@ -1,0 +1,31 @@
+{
+  "appId": "com.oblivious.hub",
+  "productName": "Oblivious Hub",
+  "directories": {
+    "output": "dist",
+    "buildResources": "assets"
+  },
+  "files": [
+    "src/**/*",
+    "!src/**/*.test.js",
+    "package.json"
+  ],
+  "extraResources": [],
+  "win": {
+    "target": [
+      "nsis"
+    ],
+    "artifactName": "OBLIVIOUS-HUB-${version}.${ext}",
+    "icon": "assets/icon.ico",
+    "signAndEditExecutable": false
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "perMachine": false
+  },
+  "asar": true,
+  "asarUnpack": [
+    "node_modules/zeromq/**/*"
+  ]
+}

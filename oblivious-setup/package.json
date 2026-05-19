@@ -1,0 +1,26 @@
+{
+  "name": "oblivious-setup",
+  "version": "1.0.0",
+  "description": "OBLIVIOUS HUB — operator GUI for DEV/VPS vault (KeyVault config.enc only)",
+  "private": true,
+  "author": "OBLIVIOUS",
+  "license": "UNLICENSED",
+  "main": "src/main-dev.js",
+  "scripts": {
+    "start:dev": "electron src/main-dev.js",
+    "start:vps": "electron src/main-vps.js",
+    "build:dev": "electron-builder --win --x64 --config electron-builder-dev.json",
+    "build:vps": "electron-builder --win --x64 --config electron-builder-vps.json",
+    "build:all": "npm run build:dev && npm run build:vps"
+  },
+  "dependencies": {
+    "axios": "^1.7.7"
+  },
+  "devDependencies": {
+    "electron": "^31.6.0",
+    "electron-builder": "^25.0.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

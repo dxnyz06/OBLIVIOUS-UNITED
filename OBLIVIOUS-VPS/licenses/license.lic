@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "customer": "OBLIVIOUS UNITED — Local Operator",
+  "issued_at": "2026-05-10T19:00:55.724Z",
+  "expires_at": "2027-12-31T23:59:59.000Z",
+  "device_id": "eefa976bc67a88f891dcd6039fb94657f72d3dd8406efbdfe35d5d4c8decb885",
+  "features": [
+    "predicted",
+    "grid",
+    "smc",
+    "ict",
+    "fvg",
+    "breakout",
+    "reverse"
+  ],
+  "signature": "mTtRN9GxbpVnVMQsEVojaGhCWatqh1eZNDAM9j3JRrHAFjARjTpoFtSxFD+wdsvUZAZD9BiEZpKaTI2Rq/4q1jHKGUgreCrPh2AbrA7YoOKXHNbbXkkkqlRgD+qp47wo9vOQ69G72nQdnI5xs+zFkznlSR214SvroCXRGiic9gNK2WsiFug6GMQAEyRkN4rp6h9xKtSdSoMOXbz31lAyCSsAU8S407ZvO5a9Xns6AX0EsClv4o8mV0ilaX/Xsi8+sDOqjKaYiPnCDx+TH3l7dIdA64UpeZ+M9J3itaBGP9OUgJXzucTZGGa5V5ZndUI7sfMNu3CsEhTjWiMHfnHDhg=="
+}
