@@ -3,3 +3,18 @@ OBLIVIOUS-DEV/build/electron/setup-dev/OBLIVIOUS SETUP DEV.exe
 OBLIVIOUS-VPS/app/Oblivious Hub.exe
 OBLIVIOUS-VPS/app/resources/elevate.exe
 OBLIVIOUS-VPS/runtime/setup-vps/OBLIVIOUS SETUP VPS.exe
+
+# Local SSH keys - NEVER commit private keys
+y
+y.pub
+*.pem
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# Local env / secrets
+.env
+*.env.local
+keyvault.dat
+

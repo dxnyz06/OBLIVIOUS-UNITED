@@ -246,28 +246,14 @@
           </header>
           <div class="panel-b">
             <div class="vps-tabs">
-              <button class="vps-tab-btn active" data-vps-tab="access" data-testid="vps-access">VPS ACCESS SECURITY</button>
-              <button class="vps-tab-btn" data-vps-tab="ssh" data-testid="vps-ssh">SSH AUTOMATIC</button>
-              <button class="vps-tab-btn" data-vps-tab="mobile" data-testid="vps-mobile">MOBILE DEVICES</button>
+              <button class="vps-tab-btn active" data-vps-tab="ssh"      data-testid="vps-tab-ssh">CONNECTION · SSH</button>
+              <button class="vps-tab-btn"        data-vps-tab="access"   data-testid="vps-tab-access">ACCESS SECURITY</button>
+              <button class="vps-tab-btn"        data-vps-tab="deploy"   data-testid="vps-tab-deploy">DEPLOY · REMOTE</button>
+              <button class="vps-tab-btn"        data-vps-tab="mobile"   data-testid="vps-tab-mobile">MOBILE DEVICES</button>
             </div>
 
-            <!-- TAB: VPS ACCESS SECURITY -->
-            <div class="vps-actions vps-tab-pane" data-vps-pane="access">
-              <div class="vps-row"><span>Generate VPS Unlock Key</span><button class="btn-cyan-outline" id="vps-gen-key" data-testid="vps-gen-key">GENERATE NEW KEY</button></div>
-              <div class="vps-row"><span>Rotate VPS Unlock Key</span><button class="btn-cyan-outline" id="vps-rotate" data-testid="vps-rotate">ROTATE KEY</button></div>
-              <div class="vps-row"><span>Revoke VPS Access</span><button class="btn-red-outline" id="vps-revoke" data-testid="vps-revoke">REVOKE ACCESS</button></div>
-              <div class="vps-row"><span>Bind VPS Fingerprint</span><button class="btn-cyan-outline" id="vps-bind" data-testid="vps-bind">BIND FINGERPRINT</button></div>
-              <div class="vps-row"><span>Generate Secure Runtime</span><button class="btn-cyan-outline" id="vps-runtime" data-testid="vps-runtime">GENERATE RUNTIME</button></div>
-              <div class="vps-row vps-status-row">
-                <span>VPS Status</span>
-                <span class="vps-status-pill" id="vps-status-pill">
-                  <span class="dot dot-down"></span><span>DISCONNECTED</span>
-                </span>
-              </div>
-            </div>
-
-            <!-- TAB: SSH AUTOMATIC -->
-            <div class="vps-actions vps-tab-pane hidden" data-vps-pane="ssh">
+            <!-- TAB 1: CONNECTION / SSH AUTOMATIC -->
+            <div class="vps-actions vps-tab-pane" data-vps-pane="ssh">
               <div class="vps-row"><span>SSH Host</span>
                 <input type="text" class="vps-input" id="ssh-host" placeholder="vps.example.com" data-testid="ssh-host" />
               </div>
@@ -275,13 +261,19 @@
                 <input type="number" class="vps-input" id="ssh-port" value="22" data-testid="ssh-port" />
               </div>
               <div class="vps-row"><span>SSH User</span>
-                <input type="text" class="vps-input" id="ssh-user" placeholder="root" data-testid="ssh-user" />
+                <input type="text" class="vps-input" id="ssh-user" placeholder="Administrator" data-testid="ssh-user" />
               </div>
-              <div class="vps-row"><span>Private Key Path</span>
-                <input type="text" class="vps-input" id="ssh-key" placeholder="C:\Users\you\.ssh\id_ed25519" data-testid="ssh-key" />
+              <div class="vps-row"><span>Bootstrap Password <small class="dim">(only for first key install)</small></span>
+                <input type="password" class="vps-input" id="ssh-bootstrap-pwd" placeholder="set on first install" data-testid="ssh-bootstrap-pwd" />
               </div>
-              <div class="vps-row"><span>Auto-deploy on push</span>
-                <label class="vps-toggle"><input type="checkbox" id="ssh-autodeploy" data-testid="ssh-autodeploy" /><span></span></label>
+              <div class="vps-row"><span>Private Key Path <small class="dim">(local, auto-filled)</small></span>
+                <input type="text" class="vps-input" id="ssh-key" readonly data-testid="ssh-key" />
+              </div>
+              <div class="vps-row"><span>Public Key Path <small class="dim">(local, auto-filled)</small></span>
+                <input type="text" class="vps-input" id="ssh-pubkey" readonly data-testid="ssh-pubkey" />
+              </div>
+              <div class="vps-row"><span>Remote Install Path</span>
+                <input type="text" class="vps-input" id="ssh-remote-path" value="C:\OBLIVIOUS-VPS\app" data-testid="ssh-remote-path" />
               </div>
               <div class="vps-row vps-status-row">
                 <span>SSH Tunnel</span>
@@ -290,46 +282,118 @@
                 </span>
               </div>
               <div class="vps-row vps-row-cta">
-                <button class="btn-cyan-outline" id="ssh-test" data-testid="ssh-test">TEST CONNECTION</button>
-                <button class="btn-cyan-outline" id="ssh-deploy" data-testid="ssh-deploy">DEPLOY NOW</button>
+                <button class="btn-cyan-outline" id="ssh-gen"       data-testid="ssh-gen">GENERATE SSH KEYPAIR</button>
+                <button class="btn-cyan-outline" id="ssh-install"   data-testid="ssh-install">INSTALL KEY ON VPS</button>
+                <button class="btn-cyan-outline" id="ssh-test"      data-testid="ssh-test">TEST CONNECTION</button>
+                <button class="btn-cyan-outline" id="ssh-save"      data-testid="ssh-save">SAVE VPS PROFILE</button>
               </div>
+              <div class="vps-log" id="ssh-log"></div>
             </div>
 
-            <!-- TAB: MOBILE DEVICES -->
-            <div class="vps-actions vps-tab-pane hidden" data-vps-pane="mobile">
-              <div class="vps-row"><span>Pairing Mode</span>
-                <select class="vps-input" id="mobile-pair-mode" data-testid="mobile-pair-mode">
-                  <option value="vpn">VPN-only (recommended)</option>
-                  <option value="qr">One-shot QR token</option>
-                </select>
-              </div>
-              <div class="vps-row"><span>Token TTL (min)</span>
-                <input type="number" class="vps-input" id="mobile-ttl" value="15" data-testid="mobile-ttl" />
-              </div>
-              <div class="vps-row"><span>Max paired devices</span>
-                <input type="number" class="vps-input" id="mobile-max" value="2" data-testid="mobile-max" />
-              </div>
-              <div class="vps-row vps-row-cta">
-                <button class="btn-cyan-outline" id="mobile-generate" data-testid="mobile-generate">GENERATE PAIRING TOKEN</button>
-                <button class="btn-red-outline"  id="mobile-revoke-all" data-testid="mobile-revoke-all">REVOKE ALL DEVICES</button>
-              </div>
-              <div class="paired-list">
-                <div class="paired-list-h">PAIRED DEVICES</div>
-                <ul id="paired-devices-list" class="paired-ul" data-testid="paired-devices-list">
-                  <li class="paired-empty">— no paired devices —</li>
-                </ul>
-              </div>
+            <!-- TAB 2: VPS ACCESS SECURITY -->
+            <div class="vps-actions vps-tab-pane hidden" data-vps-pane="access">
+              <div class="vps-row"><span>Generate VPS Unlock Key</span><button class="btn-cyan-outline" id="vps-gen-key"   data-testid="vps-gen-key">GENERATE NEW KEY</button></div>
+              <div class="vps-row"><span>Rotate VPS Unlock Key</span>  <button class="btn-cyan-outline" id="vps-rotate"    data-testid="vps-rotate">ROTATE KEY</button></div>
+              <div class="vps-row"><span>Revoke VPS Access</span>      <button class="btn-red-outline"  id="vps-revoke"    data-testid="vps-revoke">REVOKE ACCESS</button></div>
+              <div class="vps-row"><span>Bind VPS Fingerprint</span>   <button class="btn-cyan-outline" id="vps-bind"      data-testid="vps-bind">BIND FINGERPRINT</button></div>
+              <div class="vps-row"><span>Generate Secure Runtime</span><button class="btn-cyan-outline" id="vps-runtime"   data-testid="vps-runtime">GENERATE RUNTIME</button></div>
               <div class="vps-row vps-status-row">
-                <span>Mobile Bridge</span>
-                <span class="vps-status-pill" id="mobile-status-pill">
-                  <span class="dot dot-online"></span><span>CONNECTED</span>
+                <span>VPS Status</span>
+                <span class="vps-status-pill" id="vps-status-pill">
+                  <span class="dot dot-down"></span><span>DISCONNECTED</span>
                 </span>
               </div>
+              <div class="vps-log" id="access-log"></div>
+            </div>
+
+            <!-- TAB 3: DEPLOY / REMOTE ACTIONS -->
+            <div class="vps-actions vps-tab-pane hidden" data-vps-pane="deploy">
+              <div class="vps-row vps-row-cta">
+                <button class="btn-cyan-outline" id="dep-bundle"       data-testid="dep-bundle">DEPLOY RUNTIME</button>
+                <button class="btn-cyan-outline" id="dep-push-config"  data-testid="dep-push-config">PUSH CONFIG</button>
+                <button class="btn-cyan-outline" id="dep-push-license" data-testid="dep-push-license">PUSH LICENSE</button>
+              </div>
+              <div class="vps-row vps-row-cta">
+                <button class="btn-cyan-outline" id="dep-restart"  data-testid="dep-restart">RESTART HUB</button>
+                <button class="btn-red-outline"  id="dep-stop"     data-testid="dep-stop">STOP HUB</button>
+                <button class="btn-cyan-outline" id="dep-logs"     data-testid="dep-logs">PULL LOGS</button>
+                <button class="btn-cyan-outline" id="dep-health"   data-testid="dep-health">HEALTH CHECK</button>
+              </div>
+              <div class="vps-row vps-status-row">
+                <span>Hub remote process</span>
+                <span class="vps-status-pill" id="dep-hub-pill">
+                  <span class="dot dot-down"></span><span>UNKNOWN</span>
+                </span>
+              </div>
+              <div class="vps-log" id="deploy-log"></div>
+            </div>
+
+            <!-- TAB 4: MOBILE DEVICES — direct VPS↔mobile encrypted control -->
+            <div class="vps-actions vps-tab-pane hidden" data-vps-pane="mobile">
+              <div class="vps-row vps-status-row">
+                <span>Mobile Gateway</span>
+                <span class="vps-status-pill" id="mob-status-pill">
+                  <span class="dot dot-down"></span><span>STOPPED</span>
+                </span>
+              </div>
+              <div class="vps-row"><span>Listen Port</span>
+                <input type="number" class="vps-input" id="mob-port" value="8443" data-testid="mob-port" />
+              </div>
+              <div class="vps-row"><span>Reachable URL <small class="dim">(LAN/WireGuard hosts)</small></span>
+                <input type="text" class="vps-input" id="mob-url" readonly data-testid="mob-url" />
+              </div>
+              <div class="vps-row vps-row-cta">
+                <button class="btn-cyan-outline" id="mob-start"   data-testid="mob-start">START GATEWAY</button>
+                <button class="btn-red-outline"  id="mob-stop"    data-testid="mob-stop">STOP GATEWAY</button>
+                <button class="btn-cyan-outline" id="mob-refresh" data-testid="mob-refresh">REFRESH</button>
+              </div>
+
+              <div class="vps-row">
+                <span>New Pairing</span>
+                <span style="display:flex; gap:6px; align-items:center;">
+                  <select id="mob-role" class="vps-input" style="width:auto" data-testid="mob-role">
+                    <option value="viewer">VIEWER (read-only)</option>
+                    <option value="admin">ADMIN (full control)</option>
+                  </select>
+                  <button class="btn-orange" id="mob-pair" data-testid="mob-pair">GENERATE QR</button>
+                </span>
+              </div>
+
+              <div class="mob-qr-wrap" id="mob-qr-wrap" style="display:none;">
+                <img id="mob-qr-img" class="mob-qr-img" alt="QR pairing" />
+                <div class="mob-qr-meta">
+                  <div><b>Token:</b> <code id="mob-qr-token"></code></div>
+                  <div><b>Expires:</b> <span id="mob-qr-exp"></span></div>
+                  <div><b>URL:</b> <code id="mob-qr-url"></code></div>
+                  <div class="dim">Scan with the mobile device on the same WireGuard/Tailscale network.</div>
+                </div>
+              </div>
+
+              <div class="vps-row vps-status-row" style="margin-top:8px;">
+                <span>Mobile Enabled</span>
+                <label class="mob-toggle">
+                  <input type="checkbox" id="mob-policy-enabled" data-testid="mob-policy-enabled" />
+                  <span>allow paired devices</span>
+                </label>
+              </div>
+
+              <div class="mob-devices-wrap">
+                <table class="prov-table mob-devices-table">
+                  <thead>
+                    <tr><th>NAME</th><th>PLATFORM</th><th>ROLE</th><th>STATUS</th><th>LAST SEEN</th><th>ACTION</th></tr>
+                  </thead>
+                  <tbody id="mob-devices-body">
+                    <tr class="empty-row"><td colspan="6">no devices paired yet</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="vps-log" id="mob-log"></div>
             </div>
 
             <div class="vps-disclaimer">
               <svg viewBox="0 0 24 24" width="14" height="14"><path fill="#7fd17f" d="M12 2L3 6v6c0 5 3.8 9.4 9 10 5.2-.6 9-5 9-10V6l-9-4z"/></svg>
-              <span>Mobile access works only via private VPN.<br/>No public access allowed.</span>
+              <span>SSH is used <b>only</b> for VPS administration. Trading runs through ZeroMQ between the EA and the local Hub — never SSH.</span>
             </div>
           </div>
         </section>

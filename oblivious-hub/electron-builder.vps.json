@@ -1,0 +1,33 @@
+{
+  "appId": "ai.oblivious.hub.vps",
+  "productName": "Oblivious Hub (VPS Client)",
+  "directories": {
+    "output": "dist/vps",
+    "buildResources": "build"
+  },
+  "files": [
+    "src/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    { "from": "bookmap-bridge/", "to": "bookmap-bridge" }
+  ],
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "artifactName": "OBLIVIOUS-HUB-VPS-${version}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": true,
+    "allowToChangeInstallationDirectory": false,
+    "createDesktopShortcut": true,
+    "shortcutName": "Oblivious Hub (VPS)"
+  },
+  "publish": null,
+  "extraMetadata": {
+    "deploymentMode": "vps"
+  },
+  "env": {
+    "OBLIVIOUS_MODE": "vps"
+  }
+}

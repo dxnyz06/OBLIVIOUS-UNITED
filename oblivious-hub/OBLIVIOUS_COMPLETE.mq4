@@ -161,6 +161,9 @@ int CreateFileW(string, uint, uint, int, uint, uint, int);
 #define ZMQ_TOPIC_COMMAND         "oblivious.command"
 #define ZMQ_TOPIC_NEWS            "oblivious.news"
 #define ZMQ_TOPIC_BOOKMAP         "oblivious.bookmap"
+// Stream-3 fast-path: per-symbol orderflow decision (low-latency
+// refresh of g_of_* between heavier `bookmap` snapshots and ai_query).
+#define ZMQ_TOPIC_DECISION        "oblivious.decision"
 // Order ownership registry sizing (R7)
 #define OWNERSHIP_MAX             256
 #define GENERIC_READ    K32_GENERIC_READ
@@ -290,7 +293,7 @@ int CreateFileW(string, uint, uint, int, uint, uint, int);
 #define SL_COLOR clrWhite
 #define SL_LINES 6
 #define SL_SPACING_Y 12
-#define AS_MAX_STRATS 6
+#define AS_MAX_STRATS 7
 #define TRIGGER_ENTRY 0
 #define TRIGGER_EXIT 1
 #define TRIGGER_ALERT 2
@@ -415,17 +418,29 @@ enum ENUM_TRADE_MODE {
 
 // SECTION 03: INPUT / USER PARAMETERS
 
+// FASE 7 (Patch 5) - Symbol class macros usate in molti punti (es. FASE 4
+// ClusterMoney_GetMinSafetyProfit a riga ~21352 e FASE 7 GetAdaptive_*
+// a riga ~4300). Le define originali stanno a riga ~26487 ma servono qui
+// per visibilita' globale. I valori coincidono con quelli originali.
+#define HYB_SYM_FX_MAJOR   1
+#define HYB_SYM_METAL      2
+#define HYB_SYM_INDEX      3
+#define HYB_SYM_CRYPTO     4
+#define HYB_SYM_OTHER      0
+
 input AccountSelection AccountSelect = AccountDemo;      // Account Type
 input ENUM_TPSL_MODE TPSLMode = TPSL_Native; // TP/SL Mode
 input ENUM_TRADE_MODE Mode = Moderate;       // Trading Mode
 input string ConfidenceSection = "=== CONFIDENCE SETTINGS ==="; // -----
 input int AiMinConfidence = 60;        // AI Min Confidence %
-input double AiPredMinConf = 65.0; // Predicted Min Confidence % (pipeline threshold)
+// FASE 8: tipo int per coerenza con AiMinConfidence/IndicatorsConfidence/
+// FiltersConfidence/PatternsConfidence/HybridMinConfidence (tutti int).
+input int AiPredMinConf = 80; // Predicted Min Confidence % (pipeline threshold)
 // Policy soglie quality per i tre engine sempre-on. NON sono switch on/off:
 // abbassarli rende gli engine piu' "permissivi" (piu' segnali passano in consensus),
 // alzarli rende il consensus piu' selettivo. Nessuno di questi spegne l'engine.
 input int IndicatorsConfidence = 60;   // Indicator Engine — soft quality threshold (policy)
-input int FiltersConfidence = 55;      // Filter Engine    — soft quality threshold (policy)
+input int FiltersConfidence = 60;      // Filter Engine    — soft quality threshold (policy)
 input int PatternsConfidence = 60;     // Pattern Engine   — per-pattern firing threshold (policy)
 input int HybridMinConfidence = 60;    // Hybrid Engine    — soft confidence threshold (policy)
 input string NewsSection = "=== DATA SOURCES (NEWS & AI) ==="; // -----
@@ -437,9 +452,9 @@ input double ManualLot = 0.10;                    // Manual Lot Size (all strate
 input double RiskPercent = 1.0;                   // Risk Per Trade %
 input double MaxRiskTradePercent = 1.0;           // Max Risk Per Trade % (equity-based clamp)
 input double MaxRiskForSymbol = 3.0;              // Max Risk Per Symbol
-input bool ClusterMoney = false;                  // Cluster Money Management
-input bool ChallengePassage = false;              // Challenge Passage Mode
-input bool PeakProfitLock = false;                // Peak Profit Lock
+input bool ClusterMoney = true;                  // Cluster Money Management
+input bool ChallengePassage = true;              // Challenge Passage Mode
+input bool PeakProfitLock = true;                // Peak Profit Lock
 input double PeakProfitRetracePercent = 20.0;     // Peak Profit Retrace %
 input double MinEmergencyProfitPercent = 10.0;    // Min Emergency Profit %
 input double MaxDailyDDPercent = 4.5;             // Max Daily DD %
@@ -452,7 +467,7 @@ input string StratSection = "=== STRATEGIES ==="; // -----
 input bool Predicted = true;      // Predicted (AI/news-driven)
 input bool Breakout = true;    // Breakout (session/momentum)
 input bool FVG = true;               // FVG (Fair Value Gap)
-input bool Grid = false;   // Grid (Adaptive Range Reversion)
+input bool Grid = true;   // Grid (Adaptive Range Reversion)
 input bool SMC = true;           // SMC (Smart Money Concepts: OB, Breaker, Mitigation, BOS/CHOCH)
 input bool ICT = true;           // ICT (Inner Circle Trader: AMD, Judas, KZ, SMT, ORB, Turtle Soup, QM)
 input bool Reverse = true;     // Reverse (reversal/contrarian)
@@ -475,8 +490,8 @@ input int MaxGridLevels = 6;                  // Grid Max Levels
 input double GridLotMultiplier = 2.0;         // Grid Lot Multiplier (level_n = ManualLot * GridLotMultiplier^n)
 input string PanelSection = "=== PANELS ==="; // -----
 input bool DynamicPanel = true;               // Dynamic Panel
-input bool SmartPanel = false;                // Smart Panel
-input bool TriggerPanel = false;              // Trigger Panel
+input bool SmartPanel = true;                // Smart Panel
+input bool TriggerPanel = true;              // Trigger Panel
 input string ScheduleSection = "=== TRADING SCHEDULE ==="; // -----
 input string TradeStart = "00:00";                         // Trade Start Time
 input string TradeEnd = "23:59";                           // Trade End Time
@@ -644,7 +659,12 @@ enum MarketSession {
 // ============================================================
 // ============================================================
 
-// ParentSetup: tracks the parent context for burst + addon trades
+// ParentSetup: tracks the parent context for burst + addon trades.
+// FASE 2 - esteso con campi Pending Lifecycle Manager:
+//   - pending_ticket / pending_price / pending_sl / pending_tp
+//   - detect_time / last_reprice_time / reprice_count
+//   - atr_at_create (per calibrare move tolerance)
+//   - is_mini (true per setup M5 micro - thresholds piu' stretti)
 struct ParentSetup {
    int    setup_id;            // unique setup identifier
    string owner_strategy;      // "FVG", "SMC", "ICT", etc.
@@ -658,6 +678,16 @@ struct ParentSetup {
    int    burst_count;         // number of burst entries placed
    int    addon_count;         // number of adaptive add-ons placed
    bool   is_valid;            // setup still active/valid
+   // FASE 2 - Pending Lifecycle Manager fields
+   int      pending_ticket;        // ticket pending principale (0 se nessuno o riempito)
+   double   pending_price;         // ultimo prezzo pending registrato
+   double   pending_sl;            // ultimo SL pending
+   double   pending_tp;            // ultimo TP pending
+   datetime detect_time;           // quando il setup e' stato creato
+   datetime last_reprice_time;     // ultimo OrderModify (throttle)
+   int      reprice_count;         // counter modifiche (cap by Mode)
+   double   atr_at_create;         // ATR al momento della creazione (move tolerance)
+   bool     is_mini;               // FASE 5 - true per micro setup M5
 };
 
 // ChildTradeContext: identifies child trade within a parent setup
@@ -728,6 +758,19 @@ struct TPSLTrackInfo {
    bool tp2Hit;
    bool tp3Hit;
    int orderType; // OP_BUY or OP_SELL
+   // FASE 3 - LIVE state machine:
+   //   0=UNARMED (SL broker LARGO arming, lascia respirare)
+   //   1=PROTECTED (SL broker = initialSL projected)
+   //   2=BE (SL spostato a entry+buffer dopo TP1)
+   //   3=TRAIL (trailing post-TP3)
+   int      liveState;
+   datetime openedAt;        // wall time del fill (per arming guard)
+   double   armingSL;        // SL "largo" usato in UNARMED
+   // FASE 12 - REATTACH RECOVERY:
+   //   recoveredAt > 0 -> trade ripreso da EA reattach.
+   //   Durante recovery_grace il TPSL manager NON tocca SL broker
+   //   ne' applica BE per ulteriori N secondi (warmup).
+   datetime recoveredAt;
 };
 TPSLTrackInfo g_tpsl_tracks[TPSL_MAX_TRACKED];
 int g_tpsl_trackCount = 0;
@@ -1553,6 +1596,16 @@ string   g_dynNews[3];
 bool     g_trigToggle[7];
 string   g_trigNames[7];
 int      g_smpLastCount = 0;
+// Smart Panel — per-row CLOSE button → ticket map (mirrors what was
+// painted at the last SmartPanel_Update() so the click handler can
+// look up the right ticket without re-walking the order book).
+int      g_smpRowTicket[16];
+// Panel update throttle — OnTick may fire hundreds of times per
+// second on liquid symbols. We refresh the on-chart panels at most
+// every PANELS_UPDATE_MS milliseconds (GetTickCount-based) to keep
+// the UI fluid without flooding the chart with redraws.
+uint     g_panelsLastUpdate = 0;
+#define  PANELS_UPDATE_MS 250
 double   g_hue = 0.0;
 color    g_rainbowColor = clrWhite;
 double   FVG_SL = 0.0;
@@ -1948,7 +2001,7 @@ bool SmartCandleProfiling(int shift, double bodyMin, double wickMax) {
    return (_Body(shift) / rng >= bodyMin); }
 
 bool PatternVolumeSpike(int period, double multNormal, double multSpike) {
-   double vol0 = iVolume(Symbol(), Period(), 1);
+   double vol0 = (double)iVolume(Symbol(), Period(), 1);
    double volMA = iMA(Symbol(), Period(), period, 0, MODE_SMA, PRICE_CLOSE, 1);
    return (vol0 > volMA * multNormal); }
 
@@ -2244,7 +2297,7 @@ double Filter_Spread_Score_v2(int dir) {
 
 double Filter_Regime_Score_v2(int dir) {
    double adx = iADX(Symbol(), Period(), 14, PRICE_CLOSE, MODE_MAIN, 1);
-   if (adx > 25.0) return (dir != 0 ? 70.0 : 40.0);
+   if (adx > (double)GetAdaptive_ADX_Trend()) return (dir != 0 ? 70.0 : 40.0);
    return 50.0;
 }
 
@@ -2319,7 +2372,16 @@ double Risk_ApplyClampToLots(string symbol, double lots, double sl_pts, int dire
 double Risk_GridBasketRiskPct(string sym);
 double Risk_Preflight(string sym, string owner, double desiredLots, double slPips, int direction, string &outReason);
 void TPSLManager_OnTick();
-void TPSL_RegisterTrade(int ticket, int magic, string strategy, int orderType, double g_entryPrice, double initialSL);
+void TPSL_RegisterTrade(int ticket, int magic, string strategy, int orderType, double g_entryPrice, double initialSL, bool isRecovery = false);
+// FASE 4 - ClusterMoney (UNICA authority profit guards)
+void   ClusterMoney_OnTick();
+double ClusterMoney_TrackPeak(int ticket, double pnl_net);
+void   ClusterMoney_RemoveGV(int ticket);
+void   ClusterMoney_CleanupOrphanGV();
+void   ClusterMoney_CleanupAllGV();
+double ClusterMoney_GetMinSafetyProfit();
+// FASE 6 - Mediazione Grid automatica
+void   Grid_AutoAverage();
 bool Predicted_DetectImpulse();
 bool Predicted_BuildOTE2();
 bool Predicted_AntiLateFilter();
@@ -2430,6 +2492,13 @@ void NewsPolicy_Update() {
 
 bool NewsPolicy_CanOpen(string strategy) {
    if (!g_np_newsInitialized) NewsPolicy_Init();
+   // R8: hub-driven HOLD layers veto new entries for EVERY owner
+   // strategy that calls NewsPolicy_CanOpen() as its entry gate
+   // (FVG / SMC / ICT / Breakout / Reverse / Grid / Predicted).
+   // Hard gates stay local: this only blocks NEW openings,
+   // existing tickets keep their lifecycle.
+   if (Hub_HoldGlobal_IsActive())         return false;
+   if (Hub_HoldOwner_IsActive(strategy))  return false;
    if (strategy == "Predicted") return true;
    if (g_np_highImpactWindowActive) return false;
    return true;
@@ -2558,13 +2627,13 @@ int CheckReverseSignal() {
    double indBonus_R = IndicatorAlignmentBonus(0); // computed at signal time
    double upper = High[1] - MathMax(Close[1], Open[1]);
    double lower = MathMin(Close[1], Open[1]) - Low[1];
-   // RSI oversold + bullish rejection wick (hammer pattern)
-   if (rsi < 30.0 && lower > body * 1.2 && lower > atr * 0.25) return 1;
-   // RSI overbought + bearish rejection wick (shooting star)
-   if (rsi > 70.0 && upper > body * 1.2 && upper > atr * 0.25) return -1;
-   // Additional: extreme RSI + prior candle divergence
-   if (rsi < 25.0 && Close[1] > Close[2] && Close[2] < Close[3]) return 1;
-   if (rsi > 75.0 && Close[1] < Close[2] && Close[2] > Close[3]) return -1;
+   // RSI oversold + bullish rejection wick (hammer pattern) - FASE 7 adaptive
+   if (rsi < GetAdaptive_RSI_OS() && lower > body * 1.2 && lower > atr * 0.25) return 1;
+   // RSI overbought + bearish rejection wick (shooting star) - FASE 7 adaptive
+   if (rsi > GetAdaptive_RSI_OB() && upper > body * 1.2 && upper > atr * 0.25) return -1;
+   // Additional: extreme RSI + prior candle divergence (FASE 3 adaptive)
+   if (rsi < GetAdaptive_RSI_Extreme_OS() && Close[1] > Close[2] && Close[2] < Close[3]) return 1;
+   if (rsi > GetAdaptive_RSI_Extreme_OB() && Close[1] < Close[2] && Close[2] > Close[3]) return -1;
    return 0;
 }
 int CheckGridSignal() {
@@ -2743,10 +2812,10 @@ void SmartLogAdaptiveSnapshot() {
       double katr = Auto_PA_ThresholdATR();
       // Parameters
       int emaF = Auto_EMA_Fast(), emaS = Auto_EMA_Slow();
-      int rsiP = Auto_RSI_Period(), rsiL = Auto_RSI_Low(),
-          rsiH = Auto_RSI_High();
+      int rsiP = Auto_RSI_Period(), rsiL = (int)Auto_RSI_Low(),
+          rsiH = (int)Auto_RSI_High();
       int sk = Auto_STO_K(), sd = Auto_STO_D(), ss = Auto_STO_Slow(),
-          slo = Auto_STO_Low(), shi = Auto_STO_High();
+          slo = (int)Auto_STO_Low(), shi = (int)Auto_STO_High();
       int cciP = Auto_CCI_Period(), momP = Auto_MOM_Period();
       int bbP = Auto_BB_Period();
       double bbD = Auto_BB_Dev();
@@ -2942,10 +3011,10 @@ int ScalePointsByATR(int basePts)
 
 double VolRatioNow()
 {
-      double v0 = iVolume(Symbol(), Period(), 0);
+      double v0 = (double)iVolume(Symbol(), Period(), 0);
       double avg = 0;
       for (int i = 1; i <= 20; i++)
-        avg += iVolume(Symbol(), Period(), i);
+        avg += (double)iVolume(Symbol(), Period(), i);
       avg /= 20.0;
       if (avg <= 0)
         return 1.0;
@@ -3546,7 +3615,7 @@ void AIBC_RefreshMagics()
       } else {
         ArrayResize(AIBC_Magics, ArraySize(used));
         for (int k = 0; k < ArraySize(used); k++)
-          AIBC_Magics[k] = used[k];
+          AIBC_Magics[k] = (int)used[k];
       }
 }
 
@@ -3625,8 +3694,8 @@ void ActiveStrategiesPanel_Update_RT()
       ObjectSetInteger(0, titleId, OBJPROP_COLOR, clrWhite);
       ObjectSetString(0, titleId, OBJPROP_TEXT, "Active Strategies");
 
-      // 6 canonical strategy names and magic numbers
-      string names[AS_MAX_STRATS] = {
+      // 7 canonical strategy names and magic numbers
+      string names[7] = {
           "Predicted", "Grid",    "Breakout",
           "FVG",       "SMC", "ICT", "Reverse"};
       int magics[AS_MAX_STRATS];
@@ -3636,7 +3705,7 @@ void ActiveStrategiesPanel_Update_RT()
       magics[3] = FVGMagic;     // FVG
       magics[4] = SMCMagic; // SMC
       magics[5] = ICTMagic; // ICT
-      magics[5] = ReverseMagic;          // Reverse
+      magics[6] = ReverseMagic;          // Reverse
 
       // Compute PnL and open count per strategy
       double pnl[AS_MAX_STRATS];
@@ -3762,8 +3831,10 @@ void TriggerOverlay_OnNewBar()
   ObjectSetDouble(0, _id, OBJPROP_PRICE, 0, _top);                             \
   ObjectSetDouble(0, _id, OBJPROP_PRICE, 1, _bot);
       bool sweepOK = false;
+      // FASE 7 (Patch 5): Pattern variabile sostituita da
+      // GetAdaptive_PatternEnabled() (asset-class + volatility aware).
       if (Reverse || FVG || SMC || ICT ||
-          Pattern) {
+          GetAdaptive_PatternEnabled()) {
         sweepOK = LH_SweepValid(sym, tf, 1);
       }
       if (Reverse) {
@@ -3900,6 +3971,7 @@ void TriggerOverlay_OnTick_Update()
         double med = refRange;
         int w = 20, cnt = 0;
         double arr[64];
+        ArrayInitialize(arr, 0.0);
         for (int k = 1; k <= w && k < Bars && k < 64; k++) {
           arr[cnt++] = High[k] - Low[k];
         }
@@ -4057,7 +4129,7 @@ void AutoConfigureStrategies() {
       double adx = iADX(Symbol(), 0, 14, PRICE_CLOSE, MODE_MAIN, 0);
       double atr = iATR(Symbol(), 0, 14, 0);
       double avgATR = iATR(Symbol(), 0, 14, 20);
-      bool trending = (adx > 25);
+      bool trending = (adx > (double)GetAdaptive_ADX_Trend());
       bool highVol = (avgATR > 0 && atr > avgATR * 1.2);
       if (trending && highVol)
         Print("[AUTOCONF] Trending+HighVol detected");
@@ -4249,11 +4321,106 @@ double Auto_RSI_High()   {
 double Auto_RSI_Low()   {
       return 30.0; }
 
+// ============================================================
+// FASE 7 (Patch 5) - Adaptive market-driven parameter getters.
+// Sostituiscono i literal hardcoded 70/30 / 3.0 / 10 sparsi nei
+// consumer vivi (Strategy_RSI_Logic, CheckReverseSignal,
+// CheckExtendedIndicators, Strategy_FVG_Logic_v2, etc.).
+// Auto-detect per:
+//   - classe asset via Hyb_SymbolClass (HYB_SYM_FX/METAL/INDEX/CRYPTO)
+//   - timeframe corrente via Period()
+//   - volatilita' live via ratio ATR(M_TF) / ATR(D1)
+// Senza tabella hardcoded: tutto deriva dal mercato osservato.
+// ============================================================
+
+int GetAdaptive_RSI_OB() {
+   int cls = Hyb_SymbolClass();
+   int base = (cls == HYB_SYM_CRYPTO) ? 75 : 70;
+   double atrM = iATR(Symbol(), 0, 14, 0);
+   double atrD = iATR(Symbol(), PERIOD_D1, 14, 0);
+   double volRatio = (atrD > 0 ? atrM / atrD : 1.0);
+   if (volRatio > 1.5) base += 3;        // mercato piu' volatile del solito
+   else if (volRatio < 0.6) base -= 2;   // mercato calmo
+   if (Period() >= PERIOD_H4) base -= 2; // TF alti: estremi piu' permissivi
+   if (base < 60) base = 60;
+   if (base > 85) base = 85;
+   return base;
+}
+
+int GetAdaptive_RSI_OS() {
+   return 100 - GetAdaptive_RSI_OB();
+}
+
+double GetAdaptive_SuperTrendMult() {
+   int cls = Hyb_SymbolClass();
+   double base = 2.0;                              // fx default
+   if      (cls == HYB_SYM_CRYPTO) base = 4.0;
+   else if (cls == HYB_SYM_METAL)  base = 3.0;
+   else if (cls == HYB_SYM_INDEX)  base = 3.0;
+   double close = iClose(Symbol(), 0, 0);
+   double atr   = iATR(Symbol(), 0, 14, 0);
+   double volRel = (close > 0 ? atr / close : 0.005);
+   double scaled = base * (1.0 + (volRel - 0.005) * 10.0);
+   if (scaled < 1.5) scaled = 1.5;
+   if (scaled > 6.0) scaled = 6.0;
+   return scaled;
+}
+
+int GetAdaptive_ST_ATRPeriod() {
+   int p = Period();
+   if (p <= PERIOD_M5)  return 10;
+   if (p <= PERIOD_H1)  return 14;
+   return 21;
+}
+
+bool GetAdaptive_PatternEnabled() {
+   // Pattern Engine sempre utile salvo crypto in trend forte (rumore alto).
+   int cls = Hyb_SymbolClass();
+   if (cls == HYB_SYM_CRYPTO) {
+      double atrM = iATR(Symbol(), 0, 14, 0);
+      double atrD = iATR(Symbol(), PERIOD_D1, 14, 0);
+      double volRatio = (atrD > 0 ? atrM / atrD : 1.0);
+      if (volRatio > 1.5) return false;
+   }
+   return true;
+}
+
+bool GetAdaptive_PivotsEnabled() {
+   // Pivot points hanno significato intraday (<= H4).
+   return (Period() <= PERIOD_H4);
+}
+
+// FASE 3 - ADX adaptive threshold (sostituisce 25 hardcoded).
+// FX_MAJOR default 25; METAL 23 (range piu' rumoroso);
+// INDEX 22 (futures fast); CRYPTO 28 (rumore alto richiede trend forte).
+// TF alti hanno trend piu' netti -> threshold piu' alta.
+int GetAdaptive_ADX_Trend() {
+   int cls = Hyb_SymbolClass();
+   int base = 25;
+   if      (cls == HYB_SYM_CRYPTO) base = 28;
+   else if (cls == HYB_SYM_METAL)  base = 23;
+   else if (cls == HYB_SYM_INDEX)  base = 22;
+   if (Period() >= PERIOD_H4) base += 3;
+   else if (Period() <= PERIOD_M5) base -= 2;
+   if (base < 15) base = 15;
+   if (base > 35) base = 35;
+   return base;
+}
+
+// FASE 3 - extreme RSI (default 75/25) per hammer/shooting reversal.
+int GetAdaptive_RSI_Extreme_OB() {
+   int ob = GetAdaptive_RSI_OB();
+   return MathMin(95, ob + 5);
+}
+int GetAdaptive_RSI_Extreme_OS() {
+   return 100 - GetAdaptive_RSI_Extreme_OB();
+}
+
 double Auto_RSI_OB()           {
-      return 70.0; }
+      return (double)GetAdaptive_RSI_OB(); }
 
 double Auto_RSI_OS()           {
-      return 30.0; }
+      return (double)GetAdaptive_RSI_OS(); }
 
 int Auto_EMA_Fast(){
       return g_adapt.ema_fast;
@@ -4352,10 +4519,13 @@ int Auto_MOM_Period()          {
       return 14; }
 
 int    Auto_SUPER_ATR_Period()    {
-      return 10; }
+      // FASE 7 (Patch 5): adaptive per TF (M5=10, H1=14, >H4=21).
+      return GetAdaptive_ST_ATRPeriod(); }
 
 double Auto_SUPER_ATR_Mult()  {
-      return 3.0; }
+      // FASE 7 (Patch 5): adaptive per classe asset + volatilita' live
+      // (fx=2, metal=3, index=3, crypto=4 + scala con ATR/Close).
+      return GetAdaptive_SuperTrendMult(); }
 
 int    Auto_Generic_Period()   {
       return 14; }
@@ -6272,9 +6442,12 @@ int Confirm_RSI(int direction)
       if (!RSI)
         return direction;
       double rsi = iRSI(Symbol(), 0, 14, PRICE_CLOSE, 0);
-      if (direction > 0 && rsi > 30 && rsi < 70)
+      // FASE 7 (Patch 5): adaptive thresholds invece di 30/70 fissi.
+      int __rsi_os = GetAdaptive_RSI_OS();
+      int __rsi_ob = GetAdaptive_RSI_OB();
+      if (direction > 0 && rsi > __rsi_os && rsi < __rsi_ob)
         return direction;
-      if (direction < 0 && rsi > 30 && rsi < 70)
+      if (direction < 0 && rsi > __rsi_os && rsi < __rsi_ob)
         return direction;
       return 0;
 }
@@ -7842,7 +8015,6 @@ int MagicCompose(int strategyMagic)
 bool BypassCooldownForStrategy(int magic)
 {
       return (MagicBase(magic) == GridMagic);
-   return 0;
 }
 
 int DirFromCmd(int cmd)
@@ -8142,7 +8314,7 @@ double _SessionVWAP(string sym, ENUM_TIMEFRAMES tf, int bars=1440)
       for (int i = 0; i < counted; i++) {
         double tp =
             (iHigh(sym, tf, i) + iLow(sym, tf, i) + iClose(sym, tf, i)) / 3.0;
-        double v = iVolume(sym, tf, i);
+        double v = (double)iVolume(sym, tf, i);
         sumPV += tp * v;
         sumV += v;
       }
@@ -12085,6 +12257,22 @@ void OnDeinit(const int reason) {
 }
 
 void OnTick() {
+    // [DEBUG-BRIDGE] heartbeat ogni 50 tick: conferma OnTick scatta + stato bridge.
+    static int  g_dbg_tickCnt = 0;
+    static uint g_dbg_lastMs  = 0;
+    g_dbg_tickCnt++;
+    if (g_dbg_tickCnt == 1 || (g_dbg_tickCnt % 50) == 0) {
+       uint nowMs = GetTickCount();
+       PrintFormat("[DBG] OnTick #%d sym=%s ai_en=%s ai_conn=%s status=%s err=%d ok=%d lastResp=%d ms_since_last=%d",
+                   g_dbg_tickCnt, Symbol(),
+                   (g_ai_enabled ? "Y":"N"),
+                   (g_ai_connected ? "Y":"N"),
+                   g_ai_status,
+                   g_ai_errorCount, g_ai_successCount,
+                   (int)g_ai_lastResponse,
+                   (int)(g_dbg_lastMs > 0 ? (nowMs - g_dbg_lastMs) : 0));
+       g_dbg_lastMs = nowMs;
+    }
     Orchestrator_OnTick();
 }
 
@@ -12129,10 +12317,11 @@ bool SmartTrailBreakoutPattern(int lookback, double atrMult) {
 }
 
 bool CheckFiltersRSI() {
-   // Returns true if RSI conditions permit trading (not deeply overbought/oversold against signal)
+   // FASE 3 - thresholds estremi adaptive (asset+TF+mode).
    double rsiVal = iRSI(Symbol(), PERIOD_CURRENT, Auto_RSI_Period(), PRICE_CLOSE, 1);
-   // Broad filter: block if RSI is at extreme but no signal corroboration
-   if (rsiVal > 80 || rsiVal < 20) return false;
+   int ob = GetAdaptive_RSI_Extreme_OB();
+   int os = GetAdaptive_RSI_Extreme_OS();
+   if (rsiVal > ob || rsiVal < os) return false;
    return true;
 }
 
@@ -12165,8 +12354,11 @@ double CalculateFilterConfidence() {
    double rsiVal = iRSI(Symbol(), PERIOD_CURRENT, Auto_RSI_Period(), PRICE_CLOSE, 1);
    if (rsiVal > 0) {
       double rsiConf = 50.0;
-      if (rsiVal > 70) rsiConf = 30.0;      // Overbought penalty
-      else if (rsiVal < 30) rsiConf = 30.0; // Oversold penalty
+      // FASE 7 (Patch 5): soglie OB/OS adaptive (asset-class + TF + vol).
+      int __rsi_ob_e = GetAdaptive_RSI_OB();
+      int __rsi_os_e = GetAdaptive_RSI_OS();
+      if (rsiVal > __rsi_ob_e) rsiConf = 30.0;      // Overbought penalty
+      else if (rsiVal < __rsi_os_e) rsiConf = 30.0; // Oversold penalty
       else if (rsiVal >= 45 && rsiVal <= 55) rsiConf = 80.0; // Neutral zone bonus
       confidence += rsiConf;
       count++;
@@ -12783,6 +12975,78 @@ bool Grid_IsInCooldown() {
    return (TimeCurrent() < cooldownUntil);
 }
 
+// ============================================================
+// FASE 6.2 - Grid_AutoAverage: mediazione automatica controllata.
+// Apre il prossimo livello Grid se il basket esistente e' in
+// perdita > 1.5*ATR dal prezzo medio, il numero di livelli e'
+// sotto MaxGridLevels, e i guard challenge (Daily/Total DD)
+// permettono. Direction allineata con il primo ticket Grid.
+// ============================================================
+
+int Grid_GetDominantDirection() {
+   for (int i = 0; i < OrdersTotal(); i++) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if (OrderSymbol() != Symbol()) continue;
+      if (OrderMagicNumber() != GridMagic) continue;
+      int t = OrderType();
+      if (t == OP_BUY || t == OP_SELL) return t;
+   }
+   return -1;  // nessuna posizione Grid attiva
+}
+
+double Grid_GetAveragePrice() {
+   double sumLots = 0.0, sumPL = 0.0;
+   for (int i = 0; i < OrdersTotal(); i++) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if (OrderSymbol() != Symbol()) continue;
+      if (OrderMagicNumber() != GridMagic) continue;
+      int t = OrderType();
+      if (t != OP_BUY && t != OP_SELL) continue;
+      double lots = OrderLots();
+      sumLots += lots;
+      sumPL   += OrderOpenPrice() * lots;
+   }
+   return (sumLots > 0 ? sumPL / sumLots : 0.0);
+}
+
+void Grid_AutoAverage() {
+   if (!Grid) return;
+   int level = CountOpenOrders(GridMagic);
+   if (level <= 0 || level >= MaxGridLevels) return;
+
+   int gridDir = Grid_GetDominantDirection();
+   if (gridDir != OP_BUY && gridDir != OP_SELL) return;
+
+   double avgPx = Grid_GetAveragePrice();
+   double atr   = iATR(Symbol(), 0, 14, 0);
+   if (atr <= 0 || avgPx <= 0) return;
+
+   double curPx   = (gridDir == OP_BUY ? Bid : Ask);
+   double advATR  = (gridDir == OP_BUY ? (avgPx - curPx) : (curPx - avgPx)) / atr;
+   double trigger = 1.5;  // mediazione solo se contro-trend > 1.5*ATR
+   if (advATR < trigger) return;
+
+   // Hard guard: challenge DD non deve essere vicino al limite
+   if (!__AP_DailyDrawdownGuard()) return;
+   if (!__AP_TotalDrawdownGuard()) return;
+
+   // Cooldown anti-spam: max 1 nuovo livello ogni 60s
+   static datetime g_grid_lastAdd = 0;
+   if (TimeCurrent() - g_grid_lastAdd < 60) return;
+   g_grid_lastAdd = TimeCurrent();
+
+   double lots = LotsGrid_ByLevelScaled(ManualLot, level);
+   if (lots <= 0) return;
+
+   // SL/TP=0 -> delegati a TPSL_RegisterTrade dopo Execute*
+   if (gridDir == OP_BUY)  ExecuteBuy (lots, 0, 0, "Grid_Auto", GridMagic);
+   else                    ExecuteSell(lots, 0, 0, GridMagic, "Grid_Auto");
+
+   PrintFormat("[Grid_AutoAverage] level=%d->%d dir=%s lots=%.2f avgPx=%.5f curPx=%.5f advATR=%.2f",
+               level, level + 1, (gridDir == OP_BUY ? "BUY" : "SELL"),
+               lots, avgPx, curPx, advATR);
+}
+
 void Grid_UpdateState() {
    // Update Grid state tracking
    if (!g_gridState.isActive) return;
@@ -12819,7 +13083,7 @@ void Grid_UpdateState() {
 void Strategy_FVG_Logic() {
    if (!GlobalStrategyGuards()) return;
    if (!FVG) return;
-   if (TimeCurrent() - lastTradeTime_FVG < MinSecondsBetweenTrades) return;
+   if (TimeCurrent() - lastTradeTime_FVG < Mode_MinSecondsBetweenStaged()) return;
    if (CountOpenOrders(FVGMagic) >= MaxOpenTradesPerStrat) return;
    if (Bridge_IsConnected()) {
       string aiPayload;
@@ -12849,6 +13113,8 @@ void Strategy_FVG_Logic() {
 
 bool Strategy_SMC_Logic() {
    if (!SMC || !AllowStrategyToTrade()) return false;
+   // PATCH F: gate budget condiviso
+   if (!OwnerSymbolBudget_CanDeploy("SMC")) return false;
    // Hybrid Engine soft refinement (non-blocking; hard gates already passed)
    if (Hybrid_ShouldDiscourage("SMC")) return false;
    // Orderflow / hub ai_query SOFT refine.
@@ -12870,31 +13136,112 @@ bool Strategy_SMC_Logic() {
    if (hybStrong && hybBias ==  1) bearBOS = false; // hybrid says LONG -> drop short BOS
    if (hybStrong && hybBias == -1) bullBOS = false; // hybrid says SHORT-> drop long  BOS
    if (!bullBOS && !bearBOS) return false;
+   // PATCH 12 - SMC LIMIT-first: trovo l'Order Block migliore vicino
+   // allo swing low/high (retest dell'OB con SL dietro POI). LIMIT
+   // proximal/CE/distal in base a Hyb_PickFVGZoneIndex (i livelli OB
+   // sono midline-based ma il mapping zona/quality e' lo stesso).
+   double smc_atr = iATR(Symbol(), 0, 14, 0);
+   if (smc_atr <= 0) smc_atr = 50 * Point;
+   double sl_buf  = Hyb_GetSLBufferATR("SMC") * smc_atr;
+
+   int    best_dir   = 0;
+   double best_h     = 0.0;
+   double best_l     = 0.0;
+   double best_score = -1.0;
+
    for (int i = 3; i < lb; i++) {
       double h_i = iHigh(Symbol(), Period(), i);
       double l_i = iLow(Symbol(), Period(), i);
       double c_i = iClose(Symbol(), Period(), i);
       double o_i = iOpen(Symbol(), Period(), i);
       if (bullBOS && c_i > o_i && l_i <= swL * 1.001) {
-         double obMid = (h_i + l_i) / 2.0;
-         if (Bid <= obMid) {
-            ExecuteBuy(ManualLot, 0, 0, "SMC", SMCMagic);
-            return true;
+         double range = h_i - l_i;
+         if (range <= 0) continue;
+         double recency = 1.0 / (1.0 + (i - 3) * 0.08);
+         double score   = (range / smc_atr) * recency;
+         if (score > best_score) {
+            best_score = score; best_dir = +1;
+            best_h = h_i; best_l = l_i;
          }
       }
       if (bearBOS && c_i < o_i && h_i >= swH * 0.999) {
-         double obMid = (h_i + l_i) / 2.0;
-         if (Ask >= obMid) {
-            ExecuteSell(ManualLot, 0, 0, SMCMagic, "SMC");
-            return true;
+         double range2 = h_i - l_i;
+         if (range2 <= 0) continue;
+         double recency2 = 1.0 / (1.0 + (i - 3) * 0.08);
+         double score2   = (range2 / smc_atr) * recency2;
+         if (score2 > best_score) {
+            best_score = score2; best_dir = -1;
+            best_h = h_i; best_l = l_i;
          }
       }
    }
-   return false;
+   if (best_dir == 0) return false;
+   // FASE 7: quality floor by Mode
+   if (Hybrid_QualityFor("SMC") < Mode_QualityFloor()) {
+      PrintFormat("[SMC] skip - quality %.1f < Mode floor %.1f",
+                  Hybrid_QualityFor("SMC"), Mode_QualityFloor());
+      return false;
+   }
+
+   // OB zone -> 3 livelli (proximal=top-buy/bottom-sell, CE, distal)
+   double obLevels[];
+   int n = FVG_GetAddOnLevels(Symbol(), Period(), best_dir, best_h, best_l, obLevels);
+   if (n < 1) return false;
+
+   int zoneIdx = Hyb_PickFVGZoneIndex("SMC");
+   if (zoneIdx >= n) zoneIdx = 0;
+   double entryPx = obLevels[zoneIdx];
+   double curPx   = (best_dir == 1 ? Ask : Bid);
+   double slPx    = (best_dir == 1 ? best_l - sl_buf : best_h + sl_buf);
+
+   double lots = NormalizeLotToMarket(Active_ManualLot());
+   lots = Risk_ClampLotToMaxRisk(Symbol(), lots, slPx, entryPx);
+   if (lots <= 0) return false;
+
+   // PATCH 19: market fallback solo se LIMIT sarebbe gia' superato
+   // (prezzo dentro POI e troppo vicino al CE per attendere).
+   double minDist = Hyb_GetEntryDistanceATR("SMC") * smc_atr;
+   bool   useFallback = false;
+   if (best_dir == 1 && entryPx >= curPx - minDist) useFallback = true;
+   if (best_dir == -1 && entryPx <= curPx + minDist) useFallback = true;
+
+   if (useFallback) {
+      // FASE 3 - market fallback NON e' piu' comportamento standard.
+      // Se il prezzo e' gia' nella zona, lo staging gestira' il
+      // disegno e attendera' un retest valido invece di
+      // marketare a caso. NO ENTRY qui.
+      PrintFormat("[SMC] price inside zone (no market fallback): wait retest dir=%d entry=%.5f cur=%.5f",
+                  best_dir, entryPx, curPx);
+      return false;
+   }
+   // PATCH C: anti-spam pending vicino
+   if (Owner_HasPendingNearPrice(SMCMagic, entryPx, 0.3 * smc_atr)) {
+      PrintFormat("[SMC] pending gia' presente near %.5f - skip", entryPx);
+      return false;
+   }
+
+   // FASE 2-5 - STAGING MODEL: NON piazziamo subito il LIMIT.
+   // Disegniamo i livelli proiettati e lasciamo allo staging engine
+   // il compito di confermare (hold + invalidation + bias) prima
+   // del SafeOrderSend reale. Gli add-on adaptive verranno re-cablati
+   // in una fase successiva dopo il deploy del primary.
+   int    expSec  = Hyb_GetExpirySeconds("SMC");
+   string cmt     = StringFormat("SMC_L%d", zoneIdx);
+   double quality = MathMax(50.0, Hybrid_QualityFor("SMC"));
+   int stgId = Staging_Submit("SMC", best_dir, entryPx, slPx, lots, SMCMagic,
+                              cmt, expSec,
+                              (best_dir == 1 ? clrAqua : clrOrange),
+                              quality, obLevels[0], smc_atr);
+   PrintFormat("[SMC] STAGED %s dir=%d entry=%.5f sl=%.5f zone=%d stg=%d q=%.1f",
+               (best_dir == 1 ? "BUY" : "SELL"), best_dir, entryPx, slPx,
+               zoneIdx, stgId, quality);
+   return (stgId > 0);
 }
 
 bool Strategy_ICT_Logic() {
    if (!ICT || !AllowStrategyToTrade()) return false;
+   // PATCH F: gate budget condiviso
+   if (!OwnerSymbolBudget_CanDeploy("ICT")) return false;
    // Hybrid Engine soft refinement (non-blocking)
    if (Hybrid_ShouldDiscourage("ICT")) return false;
    // Orderflow / hub ai_query SOFT refine.
@@ -12917,21 +13264,91 @@ bool Strategy_ICT_Logic() {
                      g_hyb_confidence >= HybridMinConfidence);
    if (hybStrong && hybBias ==  1) bearLiqSweep = false;
    if (hybStrong && hybBias == -1) bullLiqSweep = false;
-   if (bullLiqSweep && Bid >= ote786 && Bid <= ote618) {
-      ExecuteBuy(ManualLot, 0, 0, "ICT", ICTMagic);
-      return true;
+   // PATCH 13 - ICT LIMIT-first sull'OTE zone:
+   //   bull -> BUYLIMIT in OTE [0.618, 0.786]; SL sotto swing low
+   //   bear -> SELLLIMIT in OTE bearish; SL sopra swing high
+   // Hyb_PickFVGZoneIndex sceglie quale livello dentro l'OTE:
+   //   proximal=0.618, CE=0.705, distal=0.786 (livello piu' profondo
+   //   richiesto da Judas/AMD).
+   double ict_atr = iATR(Symbol(), 0, 14, 0);
+   if (ict_atr <= 0) ict_atr = 50 * Point;
+   double sl_buf  = Hyb_GetSLBufferATR("ICT") * ict_atr;
+   double minDist = Hyb_GetEntryDistanceATR("ICT") * ict_atr;
+
+   int    best_dir   = 0;
+   double zoneHigh   = 0.0;
+   double zoneLow    = 0.0;
+   double slPx       = 0.0;
+
+   if (bullLiqSweep) {
+      best_dir = +1;
+      // OTE bullish (between 0.618 ret e 0.786 ret)
+      zoneHigh = swH - range * 0.618;        // proximal (alto)
+      zoneLow  = swH - range * 0.786;        // distal  (basso)
+      slPx     = swL - sl_buf;               // SL sotto swing low
+   } else if (bearLiqSweep) {
+      best_dir = -1;
+      // OTE bearish
+      zoneHigh = swL + range * 0.786;        // distal  (alto)
+      zoneLow  = swL + range * 0.618;        // proximal (basso)
+      slPx     = swH + sl_buf;               // SL sopra swing high
    }
-   if (bearLiqSweep && Ask <= swH - range * 0.382 && Ask >= eq) {
-      ExecuteSell(ManualLot, 0, 0, ICTMagic, "ICT");
-      return true;
+   if (best_dir == 0) return false;
+   // FASE 7: quality floor by Mode
+   if (Hybrid_QualityFor("ICT") < Mode_QualityFloor()) {
+      PrintFormat("[ICT] skip - quality %.1f < Mode floor %.1f",
+                  Hybrid_QualityFor("ICT"), Mode_QualityFloor());
+      return false;
    }
-   return false;
+
+   double oteLevels[];
+   int n = FVG_GetAddOnLevels(Symbol(), Period(), best_dir, zoneHigh, zoneLow, oteLevels);
+   if (n < 1) return false;
+   int zoneIdx = Hyb_PickFVGZoneIndex("ICT");
+   if (zoneIdx >= n) zoneIdx = 0;
+   double entryPx = oteLevels[zoneIdx];
+   double curPx   = (best_dir == 1 ? Ask : Bid);
+
+   double lots = NormalizeLotToMarket(Active_ManualLot());
+   lots = Risk_ClampLotToMaxRisk(Symbol(), lots, slPx, entryPx);
+   if (lots <= 0) return false;
+
+   bool useFallback = false;
+   if (best_dir == 1 && entryPx >= curPx - minDist) useFallback = true;
+   if (best_dir == -1 && entryPx <= curPx + minDist) useFallback = true;
+
+   if (useFallback) {
+      // FASE 3 - no market fallback standard. Wait retest.
+      PrintFormat("[ICT] price inside zone (no market fallback): wait retest dir=%d entry=%.5f cur=%.5f",
+                  best_dir, entryPx, curPx);
+      return false;
+   }
+   // PATCH C: anti-spam pending vicino
+   if (Owner_HasPendingNearPrice(ICTMagic, entryPx, 0.3 * ict_atr)) {
+      PrintFormat("[ICT] pending gia' presente near %.5f - skip", entryPx);
+      return false;
+   }
+
+   // FASE 2-5 - STAGING MODEL: detection + draw, no immediate send.
+   int    expSec  = Hyb_GetExpirySeconds("ICT");
+   string cmt     = StringFormat("ICT_OTE_L%d", zoneIdx);
+   double quality = MathMax(50.0, Hybrid_QualityFor("ICT"));
+   int stgId = Staging_Submit("ICT", best_dir, entryPx, slPx, lots, ICTMagic,
+                              cmt, expSec,
+                              (best_dir == 1 ? clrAqua : clrOrange),
+                              quality, oteLevels[0], ict_atr);
+   PrintFormat("[ICT] STAGED %s dir=%d entry=%.5f sl=%.5f zone=%d stg=%d q=%.1f",
+               (best_dir == 1 ? "BUY" : "SELL"), best_dir, entryPx, slPx,
+               zoneIdx, stgId, quality);
+   return (stgId > 0);
 }
 
 
 bool Strategy_Reverse_Logic() {
    if (!GlobalStrategyGuards()) return false;
    if (!Reverse) return false;
+   // PATCH F: gate budget condiviso
+   if (!OwnerSymbolBudget_CanDeploy("Reverse")) return false;
    if (Bridge_IsConnected()) {
       string aiPayload;
       if (Bridge_GetAISignals(Symbol(), Period(), Time[0], aiPayload)) {
@@ -12941,16 +13358,68 @@ bool Strategy_Reverse_Logic() {
          }
       }
    }
-   // Hybrid Engine soft refinement: discourage reverse setups when hybrid
-   // shows continuation pressure or strong invalidation. Never hard-veto.
-   if (Hybrid_ShouldDiscourage("Reverse")) return false;
-   // Orderflow / hub ai_query SOFT refine.
-   if (OF_ShouldDiscourage("Reverse")) return false;
+   // FASE 2 - support engines (soft penalty, no hard veto se non cancel
+   // signal estremo). Hard return SOLO se Hybrid/OF cancel_signal vero
+   // (gia' filtrato dentro le rispettive funzioni che ora ritornano
+   // true SOLO sui casi davvero estremi).
+   if (Hybrid_ShouldDiscourage("Reverse")) return false;  // cancel-only
+   if (OF_ShouldDiscourage("Reverse"))     return false;  // cancel-only
    double confidence = CalculatePatternConfidence();
    confidence = Hybrid_RefineConfidence(confidence, "Reverse");
    confidence = OF_RefineConfidence(confidence, "Reverse");
-   if (confidence < PatternsConfidence) return false;
-   if (!CheckFiltersRSI() || !CheckFiltersATR()) return false;
+   // FASE 2D - Pattern engine soft: log + penalty, ma NO return false.
+   if (confidence < PatternsConfidence) {
+      static datetime __pat_lastLog = 0;
+      if (TimeCurrent() - __pat_lastLog > 30) {
+         __pat_lastLog = TimeCurrent();
+         PrintFormat("[Pattern] Reverse low confidence (%.1f < %d) - soft penalty",
+                     confidence, PatternsConfidence);
+      }
+      // No return: Mode_QualityFloor downstream decidera' se accettare.
+   }
+   // FASE 2C - Filter engine soft: log se RSI/ATR filter fail, NO veto.
+   if (!CheckFiltersRSI() || !CheckFiltersATR()) {
+      static datetime __flt_lastLog = 0;
+      if (TimeCurrent() - __flt_lastLog > 30) {
+         __flt_lastLog = TimeCurrent();
+         Print("[Filter] Reverse RSI/ATR sub-optimal - soft penalty, no veto");
+      }
+   }
+
+   // PATCH 14 - WIRING ADDON_REVERSE_RECLAIM:
+   // Identifico pivot reclaim recente (swing low rotto e riconquistato
+   // da bull -> reclaim long; swing high rotto e riconquistato da bear
+   // -> reclaim short). Piazzo LIMIT sul pivot stesso (+0.1 ATR buffer
+   // gia' applicato da AddOn_Reverse_ReclaimLimit).
+   int hybBias = Hybrid_RefineBias(0, "Reverse");
+   int lb = 20;
+   int idxL = iLowest (Symbol(), Period(), MODE_LOW,  lb, 2);
+   int idxH = iHighest(Symbol(), Period(), MODE_HIGH, lb, 2);
+   double swL = iLow (Symbol(), Period(), idxL);
+   double swH = iHigh(Symbol(), Period(), idxH);
+   double c1  = iClose(Symbol(), Period(), 1);
+   double c2  = iClose(Symbol(), Period(), 2);
+   double l1  = iLow  (Symbol(), Period(), 1);
+   double h1  = iHigh (Symbol(), Period(), 1);
+   double atr = iATR(Symbol(), 0, 14, 0);
+   if (atr <= 0) atr = 50 * Point;
+
+   bool bullReclaim = (l1 < swL && c1 > swL && c2 <= swL);   // failed breakdown reclaim
+   bool bearReclaim = (h1 > swH && c1 < swH && c2 >= swH);   // failed breakout reclaim
+
+   // Hybrid filter: scarta lato contro-hybrid forte
+   bool hybStrong = (g_hyb_model_id != HYB_MODEL_NONE &&
+                     g_hyb_confidence >= HybridMinConfidence);
+   if (hybStrong && hybBias ==  1) bearReclaim = false;
+   if (hybStrong && hybBias == -1) bullReclaim = false;
+
+   if (!bullReclaim && !bearReclaim) return true;            // bias OK ma niente reclaim
+
+   int    dir   = (bullReclaim ? +1 : -1);
+   double pivot = (dir == 1 ? swL : swH);
+   AddOn_Reverse_ReclaimLimit(dir, pivot, atr);
+   PrintFormat("[Reverse] reclaim LIMIT dir=%d pivot=%.5f atr=%.5f",
+               dir, pivot, atr);
    return true;
 }
 
@@ -13024,10 +13493,81 @@ bool Strategy_Grid_Logic() {
 }
 
 void Strategy_Breakout_Logic() {
-   // Breakout strategy execution  routed through ExecuteStrategies dispatcher
-   // CheckBreakoutSignal() + ExecuteStrategy("Breakout", ...) handles trade placement
+   // PATCH 15 - Breakout LIMIT-first (retest model):
+   // 1) detect chiusura oltre swing high/low recente con body >50% range
+   //    (breakout sano, no doji/wick fake);
+   // 2) Hybrid filter: skip lato contro-hybrid forte;
+   // 3) piazza retest LIMIT al livello rotto (gestito da
+   //    AddOn_Breakout_RetestLimit che applica buffer 0.3 ATR);
+   // 4) market entry esplicito SOLO se il breakout e' di tipo
+   //    "continuation gia' esteso" (close > swing + 1.5 ATR) e non
+   //    e' realistico attendere retest.
    if (!GlobalStrategyGuards()) return;
    if (!Breakout) return;
+   if (!AllowStrategyToTrade()) return;
+   // PATCH F: gate budget condiviso
+   if (!OwnerSymbolBudget_CanDeploy("Breakout")) return;
+   if (Hybrid_ShouldDiscourage("Breakout")) return;
+   if (OF_ShouldDiscourage("Breakout")) return;
+
+   int lb = 20;
+   int idxL = iLowest (Symbol(), Period(), MODE_LOW,  lb, 2);
+   int idxH = iHighest(Symbol(), Period(), MODE_HIGH, lb, 2);
+   double swL = iLow (Symbol(), Period(), idxL);
+   double swH = iHigh(Symbol(), Period(), idxH);
+   double c1  = iClose(Symbol(), Period(), 1);
+   double o1  = iOpen (Symbol(), Period(), 1);
+   double h1  = iHigh (Symbol(), Period(), 1);
+   double l1  = iLow  (Symbol(), Period(), 1);
+   double atr = iATR(Symbol(), 0, 14, 0);
+   if (atr <= 0) atr = 50 * Point;
+   double body  = MathAbs(c1 - o1);
+   double range = h1 - l1;
+   if (range <= 0) return;
+   double bodyRatio = body / range;
+
+   bool bullBO = (c1 > swH && c1 > o1 && bodyRatio >= 0.50);
+   bool bearBO = (c1 < swL && c1 < o1 && bodyRatio >= 0.50);
+
+   int hybBias = Hybrid_RefineBias(0, "Breakout");
+   bool hybStrong = (g_hyb_model_id != HYB_MODEL_NONE &&
+                     g_hyb_confidence >= HybridMinConfidence);
+   if (hybStrong && hybBias ==  1) bearBO = false;
+   if (hybStrong && hybBias == -1) bullBO = false;
+
+   if (!bullBO && !bearBO) return;
+
+   int    dir   = (bullBO ? +1 : -1);
+   double level = (dir == 1 ? swH : swL);
+   double extension = (dir == 1 ? (c1 - swH) : (swL - c1));
+
+   // FASE 3 - market continuation SOLO se breakout davvero esteso
+   // (>= 2.5 ATR) E Mode Aggressive E fuori dalla attach grace E
+   // hybrid model confermato. Conditions cumulative.
+   if (extension > 2.5 * atr &&
+       Mode == Aggressive &&
+       !EA_InAttachGracePeriod() &&
+       hybStrong) {
+      double lots   = NormalizeLotToMarket(Active_ManualLot());
+      double slBuf  = Hyb_GetSLBufferATR("Breakout") * atr;
+      double slPx   = (dir == 1 ? level - slBuf : level + slBuf);
+      lots = Risk_ClampLotToMaxRisk(Symbol(), lots, slPx, (dir == 1 ? Ask : Bid));
+      if (lots <= 0) return;
+      if (dir == 1) ExecuteBuy (lots, slPx, 0, "Breakout_cont", BreakoutMagic);
+      else          ExecuteSell(lots, slPx, 0, BreakoutMagic, "Breakout_cont");
+      PrintFormat("[Breakout] MARKET continuation (extended>2.5ATR) dir=%d level=%.5f ext=%.2fATR",
+                  dir, level, extension / atr);
+      return;
+   }
+   if (extension > 1.5 * atr) {
+      PrintFormat("[Breakout] extended (%.2fATR) but no market: deferred to retest LIMIT",
+                  extension / atr);
+   }
+
+   // Default: retest LIMIT
+   AddOn_Breakout_RetestLimit(dir, level, atr);
+   PrintFormat("[Breakout] retest LIMIT dir=%d level=%.5f atr=%.5f",
+               dir, level, atr);
 }
 
 // SECTION 14: FILTER CONFIDENCE / COMBINED FILTER
@@ -14588,7 +15128,10 @@ double CalculateDynamicLot(double risk_percent, double atr_value) {
 }
 
 double CalculateStrategyLotSize(string strategy){
-      return DynamicLotSize(strategy);
+      // DynamicLotSize signature: (double sl_price = 0.0, string strat = "").
+      // Pass 0.0 for sl_price so the legacy call by strategy name still
+      // routes through the correct overload selection.
+      return DynamicLotSize(0.0, strategy);
 }
 
 double CalculateTradeLotSize(double sl_points){
@@ -14662,19 +15205,32 @@ double Risk_Preflight(string sym, string owner, double desiredLots,
 
 double Strategy_ComputeLots(string symbol, double riskPercent, double slPips)
 {
-   // R5: ManualLot must NEVER bypass MaxRiskTradePercent.  Whichever
-   // raw size we start from (ManualLot or risk-percent based), we
-   // route it through Risk_Preflight before returning.
-   double desired = (ManualLot > 0)
-                       ? ManualLot
-                       : RiskEngine_ComputeLots(symbol, riskPercent, slPips);
+   // FASE 5 NEW - Risk inputs con ruoli CHIARI:
+   //   ManualLot   = manual TARGET size (override)
+   //   RiskPercent = risk-based sizing vero (equity * pct / sl)
+   //   MaxRiskTradePercent = clamp finale hard (Risk_Preflight)
+   //
+   // Policy: se ENTRAMBI > 0  ->  desired = min(manual, risk_based)
+   //         se solo ManualLot> 0 -> desired = ManualLot
+   //         se solo RiskPercent > 0 -> desired = risk_based
+   // Cosi' nessun input "viene bypassato silently": il piu'
+   // conservativo dei due vince, poi clamp Risk_Preflight.
+   double risk_based = 0.0;
+   if (riskPercent > 0)
+      risk_based = RiskEngine_ComputeLots(symbol, riskPercent, slPips);
+   double desired = 0.0;
+   if (ManualLot > 0 && risk_based > 0) {
+      desired = MathMin(ManualLot, risk_based);
+   } else if (ManualLot > 0) {
+      desired = ManualLot;
+   } else {
+      desired = risk_based;
+   }
    string reason;
-   // NOTE: variable name `final` is a reserved token for the MQL4 parser,
-   // so we use `finalLots` here. Behaviour is identical.
    double finalLots = Risk_Preflight(symbol, "Strategy", desired, slPips, 1, reason);
    if (finalLots <= 0.0) {
-      PrintFormat("[Risk] Strategy_ComputeLots blocked sym=%s desired=%.2f reason=%s",
-                  symbol, desired, reason);
+      PrintFormat("[Risk] Strategy_ComputeLots blocked sym=%s manual=%.2f risk=%.2f desired=%.2f reason=%s",
+                  symbol, ManualLot, risk_based, desired, reason);
    }
    return finalLots;
 }
@@ -15064,7 +15620,7 @@ string ProcessAITradingRequest(string symbol, string strategyName, int direction
    
    string result = "";
 
-   if (result == 0) {
+   if (StringLen(result) == 0) {
       string error[256];
       GetLastError();
       Print("[AI Bridge] Request failed: ", error[0]);
@@ -15415,7 +15971,7 @@ bool SMC_OrderBlockValidation(double ob_level, bool is_bullish)
       ArrayResize(bods, n);
       for (int i = 0; i < n; i++) {
         int s = sh + i;
-        vols[i] = iVolume(Symbol(), PERIOD_CURRENT, s);
+        vols[i] = (double)iVolume(Symbol(), PERIOD_CURRENT, s);
         bods[i] = MathAbs(Close[s] - Open[s]);
       }
       double vmed = __Median(vols, n);
@@ -15436,7 +15992,7 @@ bool SMC_OrderBlockValidation(double ob_level, bool is_bullish)
       double s_med = __Median(scores, n);
 
       // Score corrente (displacement candle)
-      double v0 = iVolume(Symbol(), PERIOD_CURRENT, sh);
+      double v0 = (double)iVolume(Symbol(), PERIOD_CURRENT, sh);
       double b0 = MathAbs(Close[sh] - Open[sh]);
       double vr0 = (vmed > 0.0 ? v0 / vmed : 1.0);
       double br0 = (atr > 0.0 ? b0 / atr : 1.0);
@@ -15608,7 +16164,12 @@ double ComputeLotsFromOrderParams(int cmd, int magic, double sl_points){
                        " > max=" + IntegerToString(maxL));
           return 0.0;
         }
-        lots = LotsGrid_ByLevel(base, level);
+        // FASE 6.1 (Patch 1): firma reale = 2 args.
+        // LotsGrid_ByLevelScaled usa GridLotMultiplier^level
+        // INTERNAMENTE (es. base 0.10 * 2.0^L: L0=0.10 L1=0.20 L2=0.40
+        // L3=0.80). Prima si usava LotsGrid_ByLevel (lineare costante)
+        // -> GridLotMultiplier input era decorativo.
+        lots = LotsGrid_ByLevelScaled(base, level);
         // generic linear 1x,2x,3x
         int maxL_gen = (int)MathFloor(Active_MaxRiskForSymbol());
         if (level > maxL_gen) {
@@ -16030,7 +16591,7 @@ void ExecuteAITrade(){
       double confidence = ComputeStrategyConfidence("Predicted");
       if (confidence < 60.0)
         return;
-      double lots = DynamicLotSize("AI") * MathMax(0.5, confidence / 100.0);
+      double lots = DynamicLotSize(0.0, "AI") * MathMax(0.5, confidence / 100.0);
       double sl = DynamicStopLoss();
       double tp = DynamicTakeProfit();
       SendTradeOrder(signal > 0 ? OP_BUY : OP_SELL, lots, sl, tp);
@@ -16422,18 +16983,12 @@ void ExecuteStrategies() {
       if (sigB != 0 && !IsStrategyCoolingDown("Breakout") &&
           !Hybrid_ShouldDiscourage("Breakout") &&
           !OF_ShouldDiscourage("Breakout")) {
-         // Hybrid soft bias confluence: drop side that hybrid contradicts at
-         // high confidence (e.g. hybrid says LONG, breakout signals SHORT
-         // during a fakeout) — never flips the signal, only suppresses it.
-         int hb = Hybrid_RefineBias(0, "Breakout");
-         hb = OF_RefineBias(hb, "Breakout");
-         bool hybStrong = (g_hyb_model_id != HYB_MODEL_NONE &&
-                           g_hyb_confidence >= HybridMinConfidence);
-         if (!hybStrong || hb == 0 || hb == sigB) {
-            double bConf = Hybrid_RefineConfidence(80.0, "Breakout");
-            bConf        = OF_RefineConfidence(bConf, "Breakout");
-            ExecuteStrategy("Breakout", sigB, bConf);
-         }
+         // PATCH I+A: Breakout NON usa piu' ExecuteStrategy market.
+         // Strategy_Breakout_Logic() applica LIMIT-first (retest)
+         // con AddOn_Breakout_RetestLimit + market continuation
+         // SOLO se ext > 1.5*ATR. Il sigB precedente non serve piu':
+         // la logica detect-and-place vive dentro *_Logic().
+         Strategy_Breakout_Logic();
       }
    }
 
@@ -16443,9 +16998,11 @@ void ExecuteStrategies() {
       if (sigR != 0 && !IsStrategyCoolingDown("Reverse") &&
           !Hybrid_ShouldDiscourage("Reverse") &&
           !OF_ShouldDiscourage("Reverse")) {
-         double rConf = Hybrid_RefineConfidence(65.0, "Reverse");
-         rConf        = OF_RefineConfidence(rConf, "Reverse");
-         ExecuteStrategy("Reverse", sigR, rConf);
+         // PATCH I+A: Reverse NON usa piu' ExecuteStrategy market.
+         // Strategy_Reverse_Logic() applica LIMIT-first
+         // (AddOn_Reverse_ReclaimLimit su pivot reclaim) con
+         // Hybrid filter direzionale. Niente market casuale.
+         Strategy_Reverse_Logic();
       }
    }
 
@@ -16768,7 +17325,10 @@ bool SendTradeOrder(int type, double lot, double sl, double tp) {
                         if (!ChallengePassage)
                           return;
                         double dd = -DailyPnLPercent();
-                        if (dd >= 0.045) {
+                        // FASE 5 (Patch 2): dd e' FRAZIONE (DailyPnLPercent
+                        // ritorna frazione, non percentuale - confronto con
+                        // 0.045 era hardcoded a 4.5%). Ora usa l'input.
+                        if (dd >= MaxDailyDDPercent / 100.0) {
                           for (int i = OrdersTotal() - 1; i >= 0; i--) {
                             if (!OrderSelect(i, SELECT_BY_POS))
                               continue;
@@ -16831,10 +17391,10 @@ bool SendTradeOrder(int type, double lot, double sl, double tp) {
                                                         OrderLots(), __err));
                             }
                           }
-                          Print(TimeToString(TimeCurrent(),
-                                             TIME_DATE | TIME_SECONDS) +
-                                " [LIMIT][DAILYDD] "
-                                "Emergency close at 4.5%");
+                          PrintFormat("%s [LIMIT][DAILYDD] Emergency close at %.2f%%",
+                                      TimeToString(TimeCurrent(),
+                                                   TIME_DATE | TIME_SECONDS),
+                                      MaxDailyDDPercent);
                         }
                       }
 
@@ -17951,6 +18511,12 @@ bool IsBearishOrderBlock()  {
                                           }
 
 int CountOpenOrders(int magic = 0) {
+                                            // FASE 8 FIX: include ANCHE i
+                                            // pending (LIMIT/STOP) per
+                                            // garantire che
+                                            // MaxOpenTradesPerStrat non venga
+                                            // bypassato dai pending vivi che
+                                            // poi diventano live trade.
                                             string sym = Symbol();
                                             int cnt = 0;
                                             for (int i = 0; i < OrdersTotal();
@@ -17963,8 +18529,11 @@ int CountOpenOrders(int magic = 0) {
                                               if (magic != 0 &&
                                                   OrderMagicNumber() != magic)
                                                 continue;
-                                              if (OrderType() == OP_BUY ||
-                                                  OrderType() == OP_SELL)
+                                              int _ot = OrderType();
+                                              // OP_BUY (0), OP_SELL (1),
+                                              // OP_BUYLIMIT (2), OP_SELLLIMIT (3),
+                                              // OP_BUYSTOP (4), OP_SELLSTOP (5)
+                                              if (_ot >= OP_BUY && _ot <= OP_SELLSTOP)
                                                 cnt++;
                                             }
                                             return cnt;
@@ -18154,7 +18723,7 @@ int CountOpenOrders(int magic = 0) {
 
                                             int ticket = OrderManager_Send(
                                                 symbol, dir, lots, sl, tp,
-                                                "SMC", SMCMagic);
+                                                SMCMagic, "SMC");
                                             if (ticket > 0) {
                                               VirtualTPSL_Register(
                                                   ticket, symbol, dir, tp, sl,
@@ -18347,25 +18916,23 @@ int CountOpenOrders(int magic = 0) {
                                           void StrategyArbitration_Execute(
                                               int stratId, string symbol,
                                               int dir) {
-                                            switch (stratId) {
-                                            case STRAT_PREDICTED:
+                                            // PATCH I (DEPRECATED): arbitration
+                                            // chiamava Strategy_*_Execute con
+                                            // OrderManager_Send -> market
+                                            // diretto, bypassando il LIMIT-first
+                                            // delle 5 owner non-grid/predicted.
+                                            // Predicted resta market (hub-driven)
+                                            // ma e' gestito da DispatchPredicted
+                                            // Strategy. Le altre passano da
+                                            // Strategy_*_Logic() (LIMIT-first).
+                                            if (stratId == STRAT_PREDICTED) {
                                               Strategy_AI_Execute(symbol, dir);
-                                              break;
-                                            case STRAT_BREAKOUT:
-                                              Strategy_Breakout_Execute(symbol,
-   dir);
-                                              break;
-                                            case STRAT_FVG:
-                                              Strategy_FVG_Execute(symbol, dir);
-                                              break;
-                                            case STRAT_SMC:
-                                              Strategy_SMC_Execute(symbol, dir);
-                                              break;
-                                            case STRAT_REVERSE:
-                                              Strategy_Reverse_Execute(symbol,
-   dir);
-                                              break;
                                             }
+                                            // FVG/SMC/ICT/Reverse/Breakout:
+                                            // intentional no-op qui. La logica
+                                            // owner LIMIT-first vive dentro le
+                                            // rispettive *_Logic() chiamate dal
+                                            // dispatcher principale di OnTick.
                                           }
 
                                           bool Arb_HasOpposingPosition(
@@ -18399,17 +18966,12 @@ int CountOpenOrders(int magic = 0) {
                                           }
 
                                           void ManageGridPositions() {
-                                            // Grid position management:
-                                            // check levels, add positions
-                                            // if conditions met
-                                            if (!Grid)
-                                              return;
-                                            if (!Grid_AA_Allow())
-                                              return;
-                                            int count = CountPositionsByMagic(
-                                                ObliviousAiMagic);
-                                            if (count >= AllowedLevels_Grid())
-                                              return;
+                                            // FASE 9 (Patch 3): DEPRECATED.
+                                            // Sostituita da Grid_AutoAverage
+                                            // (FASE 6.2) che apre nuovi
+                                            // livelli con trigger ATR-based
+                                            // + DD guards.
+                                            return;
                                           }
 
                                           // void OrderOpenTime(); // removed - conflicts with built-in
@@ -18508,18 +19070,18 @@ void Overlay_DrawTPSL_Segments(const int segBars = 16, const int segOffsetStep =
         if (StringFind(oid, "OVSEG_", 0) == 0)
           ObjectDelete(0, oid);
       }
-      // 6 canonical strategies map
-      string names[6] = {
+      // 7 canonical strategies map
+      string names[7] = {
           "Predicted", "Grid",    "Breakout",
           "FVG",       "SMC", "ICT", "Reverse"};
-      int magics[6];
+      int magics[7];
       magics[0] = PredictedMagic;        // Predicted
       magics[1] = GridMagic;             // Grid
       magics[2] = BreakoutMagic;         // Breakout
       magics[3] = FVGMagic;     // FVG
       magics[4] = SMCMagic; // SMC
       magics[5] = ICTMagic; // ICT
-      magics[5] = ReverseMagic;          // Reverse
+      magics[6] = ReverseMagic;          // Reverse
       int secs = PeriodSeconds();
       // simple ATR for vertical offset
       int per = 14;
@@ -18985,6 +19547,12 @@ void ApplyTrailingStop(int ticket = -1) {
         if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) {
           if (ticket >= 0 && OrderTicket() != ticket) continue;
           if (!OwnerRegistry_IsOwner(OrderTicket(), OrderMagicNumber())) continue;
+          // FASE 2 FIX CRITICO: se il ticket e' gestito dal TPSL
+          // Manager (state machine UNARMED/PROTECTED/BE/TRAIL) NON
+          // applicare il trailing legacy "Bid - 50*Point" che
+          // chiudeva i trade in pochi minuti per SL stretto. La
+          // gerarchia richiesta e': TPSL Manager > legacy trailing.
+          if (TPSL_FindTrack(OrderTicket()) >= 0) continue;
           if (OrderType() == OP_BUY) {
             double newSL = Bid - (50 * Point);
             if (OrderStopLoss() < newSL) {
@@ -19318,12 +19886,30 @@ void ManageTrailingStop(){
 }
 
 void ManageBreakEven(){
-      double bePoints = Auto_SL_Pips() * 0.5;
+      // FASE 6 - BE intelligente: il trade deve aver respirato.
+      //  - threshold pip mode-aware: Conservative 0.7, Mod 0.55, Aggro 0.4 di Auto_SL_Pips
+      //  - min-age trade: 60s baseline; richiede almeno 2 bar di vita
+      //    (no BE prematuro che fa chiudere subito a small loss/zero)
+      double slMult = 0.55;
+      if (Mode == Conservative) slMult = 0.70;
+      else if (Mode == Aggressive) slMult = 0.40;
+      double bePoints = Auto_SL_Pips() * slMult;
+      int minAgeSec   = (Mode == Aggressive ? 30 : (Mode == Conservative ? 120 : 60));
+      int minBars     = 2;
+      int periodSec   = Period() * 60;
+      datetime now    = TimeCurrent();
       for (int i = OrdersTotal() - 1; i >= 0; i--) {
         if (!OrderSelect(i, SELECT_BY_POS) || OrderSymbol() != Symbol()) continue;
         if (!OwnerRegistry_IsOwner(OrderTicket(), OrderMagicNumber())) continue;
-        if (OrderType() != OP_BUY && OrderType() != OP_SELL)
-          continue;
+        if (OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+        // FASE 2 - se il ticket e' gestito da TPSL Manager (state
+        // machine UNARMED/PROTECTED/BE/TRAIL), NON applicare il BE
+        // legacy. Evita conflitti di gerarchia.
+        if (TPSL_FindTrack(OrderTicket()) >= 0) continue;
+        // Min age guard: trade deve aver vissuto abbastanza
+        int ageSec = (int)(now - OrderOpenTime());
+        if (ageSec < minAgeSec) continue;
+        if (ageSec < minBars * periodSec) continue;
         double entry = OrderOpenPrice();
         bool isBuy = (OrderType() == OP_BUY);
         double profit_pips =
@@ -19408,7 +19994,7 @@ void AIB_TP_CoPilot_Timer_Logic(){
         // Runner rule: level 1 has no TP (lvl 1 runner)
         if (lvl == 1 || aiChosen <= 0) {
           if (tpcur > 0) {
-            bool ok = AIB_SafeOrderModifyTP(ticket, 0);
+            bool ok = AIB_SafeOrderModifyTP((int)ticket, 0.0);
             AIBC_StatusLine = ok ? "OK: runner L1" : "KO: runner L1";
           } else {
             AIBC_StatusLine = "OK: runner L1";
@@ -19439,7 +20025,7 @@ void AIB_TP_CoPilot_Timer_Logic(){
         double priceDelta = AIBNF_PipsToPrice(sym, chosen);
         double newTP = isBuy ? (entry + priceDelta) : (entry - priceDelta);
         if (MathAbs(newTP - tpcur) > (pt * 4)) {
-          bool ok = AIB_SafeOrderModifyTP(ticket, newTP);
+          bool ok = AIB_SafeOrderModifyTP((int)ticket, newTP);
           AIBC_StatusLine = ok ? "OK" : "KO: modify";
         } else
           AIBC_StatusLine = "OK: unchanged";
@@ -20785,7 +21371,8 @@ void RunApplyPeakProfit() {
                           string id = ids[i];
                           if (ObjectFind(0, id) >= 0) {
                             string t = ObjectGetString(0, id, OBJPROP_TEXT);
-                            string u = StringToUpper(t);
+                            string u = t;
+                            StringToUpper(u);
                             if (StringFind(u, "AI", 0) >= 0)
                               return 1;
                             if (StringFind(u, "NATIVE", 0) >= 0)
@@ -20802,7 +21389,10 @@ void RunApplyPeakProfit() {
 
                       void TPSL_LogModeIfChanged() {
                         static string lastMode = "";
-                        string mode = TPSL_CurrentMode();
+                        int modeN = TPSL_CurrentMode();
+                        string mode = (modeN == 0 ? "NATIVE" :
+                                       modeN == 1 ? "AI" :
+                                       modeN == 2 ? "HYBRID" : "MODE_" + IntegerToString(modeN));
                         if (mode != lastMode) {
                           SmartLog("INFO", "TPSL", "Mode changed to: " + mode);
                           lastMode = mode;
@@ -20850,6 +21440,11 @@ void RunApplyPeakProfit() {
 
 
                       void EmergencyProfitGuard() {
+                        // FASE 9 (Patch 3): DEPRECATED. Sostituita da
+                        // ClusterMoney_OnTick (safety = costi+buffer
+                        // auto-class, non 10% del balance per ticket).
+                        return;
+                        // ---- unreachable legacy body below ----
                         double minPct = MathMax(
                             0.10,
                             Active_MinEmergencyProfitPercent()); // at least 10%
@@ -21004,16 +21599,22 @@ void TPSL_ComputeLevels(int orderType, double entryPrice, string strategy,
    else if (strategy == "ICT") { m1 = 1.0; m2 = 2.0; m3 = 3.0; mMax = 4.0; }
    else if (strategy == "Reverse")          { m1 = 0.8; m2 = 1.5; m3 = 2.5; mMax = 3.5; }
    
+   // BUG FIX (FASE 1): usare il PARAMETRO entryPrice, non il globale
+   // g_entryPrice che resta sempre 0.0. Con il bug originale la ladder
+   // TP1/TP2/TP3/TPMax era calcolata attorno a 0 -> trigger mai validi
+   // su SELL e istantanei/errati su BUY, e di conseguenza il trailing
+   // SL legato a tp*Hit non scattava mai.
+   double e = entryPrice;
    if (orderType == OP_BUY) {
-      tp1   = g_entryPrice + atr * m1;
-      tp2   = g_entryPrice + atr * m2;
-      tp3   = g_entryPrice + atr * m3;
-      tpmax = g_entryPrice + atr * mMax;
+      tp1   = e + atr * m1;
+      tp2   = e + atr * m2;
+      tp3   = e + atr * m3;
+      tpmax = e + atr * mMax;
    } else {
-      tp1   = g_entryPrice - atr * m1;
-      tp2   = g_entryPrice - atr * m2;
-      tp3   = g_entryPrice - atr * m3;
-      tpmax = g_entryPrice - atr * mMax;
+      tp1   = e - atr * m1;
+      tp2   = e - atr * m2;
+      tp3   = e - atr * m3;
+      tpmax = e - atr * mMax;
    }
 }
 
@@ -21025,25 +21626,66 @@ int TPSL_FindTrack(int ticket) {
 }
 
 void TPSL_RegisterTrade(int ticket, int magic, string strategy, int orderType,
-                         double entryPrice, double initialSL) {
+                         double entryPrice, double initialSL,
+                         bool isRecovery = false) {
    if (g_tpsl_trackCount >= TPSL_MAX_TRACKED) return;
    if (TPSL_FindTrack(ticket) >= 0) return;
-   
+
    int idx = g_tpsl_trackCount;
    g_tpsl_tracks[idx].ticket = ticket;
    g_tpsl_tracks[idx].magic = magic;
    g_tpsl_tracks[idx].strategy = strategy;
    g_tpsl_tracks[idx].entryPrice = entryPrice;
    g_tpsl_tracks[idx].initialSL = initialSL;
+   g_entryPrice = entryPrice;
    g_tpsl_tracks[idx].orderType = orderType;
    g_tpsl_tracks[idx].tp1Hit = false;
    g_tpsl_tracks[idx].tp2Hit = false;
    g_tpsl_tracks[idx].tp3Hit = false;
-   
+   g_tpsl_tracks[idx].liveState = 0;        // default UNARMED
+   g_tpsl_tracks[idx].openedAt  = TimeCurrent();
+   g_tpsl_tracks[idx].recoveredAt = 0;
+
+   if (!isRecovery) {
+      // FASE 3 - SL "arming" largo per i primi N secondi.
+      double atr_now = iATR(Symbol(), Period(), 14, 1);
+      double dist_proj = MathAbs(entryPrice - initialSL);
+      double dist_min  = 1.40 * atr_now;
+      double dist_arm  = MathMax(dist_proj, dist_min);
+      double armingSL  = (orderType == OP_BUY)
+                         ? entryPrice - dist_arm
+                         : entryPrice + dist_arm;
+      g_tpsl_tracks[idx].armingSL = armingSL;
+      if (OrderSelect(ticket, SELECT_BY_TICKET) && OrderCloseTime() == 0) {
+         double tpDummy = OrderTakeProfit();
+         bool _armRes = OrderModify(ticket, OrderOpenPrice(),
+                                    NormalizeDouble(armingSL, Digits),
+                                    tpDummy, 0, clrGoldenrod);
+         if (!_armRes) PrintFormat("[TPSL] WARN arming OrderModify failed tkt=%d err=%d",
+                                   ticket, GetLastError());
+      }
+      PrintFormat("[TPSL] REGISTER tkt=%d %s entry=%.5f slProj=%.5f armSL=%.5f (UNARMED, dist_proj=%.5f dist_arm=%.5f)",
+                  ticket, strategy, entryPrice, initialSL, armingSL,
+                  dist_proj, dist_arm);
+   } else {
+      // FASE 12 - REATTACH RECOVERY: NON sovrascrivere SL broker.
+      // Marca come PROTECTED se SL gia' presente (gestione gia'
+      // attiva dal trade originale), altrimenti UNARMED ma senza
+      // arming forzato. recoveredAt attiva il grace warmup.
+      g_tpsl_tracks[idx].armingSL = initialSL;
+      g_tpsl_tracks[idx].recoveredAt = TimeCurrent();
+      double brokerSL = 0;
+      if (OrderSelect(ticket, SELECT_BY_TICKET)) brokerSL = OrderStopLoss();
+      g_tpsl_tracks[idx].liveState = (brokerSL > 0 ? 1 : 0);
+      PrintFormat("[TPSL] RECOVER tkt=%d %s entry=%.5f brokerSL=%.5f state=%s",
+                  ticket, strategy, entryPrice, brokerSL,
+                  (brokerSL > 0 ? "PROTECTED(recovered)" : "UNARMED(recovered)"));
+   }
+
    TPSL_ComputeLevels(orderType, entryPrice, strategy,
       g_tpsl_tracks[idx].tp1, g_tpsl_tracks[idx].tp2,
       g_tpsl_tracks[idx].tp3, g_tpsl_tracks[idx].tpmax);
-   
+
    g_tpsl_trackCount++;
 }
 
@@ -21062,7 +21704,393 @@ bool TPSL_ModifySL(int ticket, double newSL) {
                       OrderTakeProfit(), 0, clrYellow);
 }
 
+// ============================================================
+// FASE 4 — CLUSTER MONEY: UNICA AUTHORITY per profit-close
+// Sostituisce __AP_PTP_ManageAll (80%/40% hardcoded) e
+// EmergencyProfitGuard (mai chiamata, soglia troppo aggressiva).
+//
+// Patch 3: il safe-close per ticket per profit/peak vive QUI e solo
+// qui. __AP_DailyDrawdownGuard resta separato (daily DD globale).
+// Patch 4: la safety di MinEmergencyProfitPercent NON e' "10% del
+// balance" (troppo aggressiva = blocca quasi sempre). E' invece il
+// modulatore di un buffer minimo coerente con la classe del simbolo
+// (fx=3pip, metal=8pip, index=10pip, crypto=50pip) sopra i costi
+// commission+swap, scalato sui lots.
+// Patch 7: le GlobalVariable PTP_PEAK_<ticket> sono pulite on-close,
+// periodicamente in OnTimer (orphan) e completamente in OnDeinit.
+// ============================================================
+
+string ClusterMoney_GVName(int ticket) {
+   return StringFormat("PTP_PEAK_%d", ticket);
+}
+
+double ClusterMoney_TrackPeak(int ticket, double pnl_net) {
+   string gv = ClusterMoney_GVName(ticket);
+   double peak = (GlobalVariableCheck(gv) ? GlobalVariableGet(gv) : pnl_net);
+   if (pnl_net > peak) { peak = pnl_net; GlobalVariableSet(gv, peak); }
+   return peak;
+}
+
+void ClusterMoney_RemoveGV(int ticket) {
+   string gv = ClusterMoney_GVName(ticket);
+   if (GlobalVariableCheck(gv)) GlobalVariableDel(gv);
+}
+
+void ClusterMoney_CleanupOrphanGV() {
+   // Pulisce GV PTP_PEAK_* di ticket non piu' presenti o gia' chiusi.
+   // Chiamata da OnTimer (ogni ~60s tramite contatore interno).
+   int total = GlobalVariablesTotal();
+   for (int i = total - 1; i >= 0; i--) {
+      string nm = GlobalVariableName(i);
+      if (StringFind(nm, "PTP_PEAK_") != 0) continue;
+      int t = (int)StringToInteger(StringSubstr(nm, 9));
+      if (!OrderSelect(t, SELECT_BY_TICKET) || OrderCloseTime() != 0) {
+         GlobalVariableDel(nm);
+      }
+   }
+}
+
+void ClusterMoney_CleanupAllGV() {
+   // Pulisce TUTTE le GV PTP_PEAK_*. Chiamata da Orchestrator_OnDeinit
+   // per non lasciare stato sporco quando l'EA viene rimosso.
+   int total = GlobalVariablesTotal();
+   for (int i = total - 1; i >= 0; i--) {
+      string nm = GlobalVariableName(i);
+      if (StringFind(nm, "PTP_PEAK_") == 0) GlobalVariableDel(nm);
+   }
+}
+
+double ClusterMoney_GetMinSafetyProfit() {
+   // Buffer minimo profit-safe per ticket = |swap|+|commission| + buffer_pip
+   // scalato per (a) classe asset auto-detect (Hyb_SymbolClass: int via
+   // HYB_SYM_*) e (b) lot size attuale. MinEmergencyProfitPercent
+   // (input 447) modula il buffer: 10.0 = 1.0x base, 20.0 = 2.0x base.
+   double cost = MathAbs(OrderSwap()) + MathAbs(OrderCommission());
+   int    cls  = Hyb_SymbolClass();
+   double bufferPips = 3.0;                          // fx default
+   if      (cls == HYB_SYM_CRYPTO) bufferPips = 50.0;
+   else if (cls == HYB_SYM_METAL)  bufferPips = 8.0;
+   else if (cls == HYB_SYM_INDEX)  bufferPips = 10.0;
+   double tickVal = MarketInfo(OrderSymbol(), MODE_TICKVALUE);
+   double lotStep = MarketInfo(OrderSymbol(), MODE_LOTSTEP);
+   if (lotStep <= 0) lotStep = 0.01;
+   double lots = OrderLots();
+   // Profit in valuta deposito per 1 pip su lots = bufferPips * tickVal * 10 * (lots/lotStep)
+   // (1 pip = 10 point su simboli 5-digit; tickVal e' per 1 tick)
+   double buffer_money = bufferPips * tickVal * 10.0 * (lots / lotStep);
+   double scale = (MinEmergencyProfitPercent > 0 ? MinEmergencyProfitPercent / 10.0 : 1.0);
+   return cost + buffer_money * scale;
+}
+
+void ClusterMoney_OnTick() {
+   // FASE 5 - ClusterMoney "ultima sponda":
+   // GATE 0 (NUOVO): MATURITY - trade deve essere maturo prima che
+   //   il peak-retrace sia valutato. Niente chiusure su spike di
+   //   profitto in trade appena nato. Min-age mode/TF aware.
+   // GATE 1: SAFETY (no close sotto minSafe class-aware)
+   // GATE 2: PEAK RETRACE (close su retrace X% dal peak)
+   datetime now = TimeCurrent();
+   int matureSec = (Mode == Aggressive ? 60 : (Mode == Conservative ? 240 : 150));
+   int matureBars = (Period() <= 5 ? 2 : 3);
+   int periodSec = Period() * 60;
+
+   for (int i = OrdersTotal() - 1; i >= 0; i--) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if (OrderSymbol() != Symbol()) continue;
+      if (OrderType() > OP_SELL) continue;            // solo market positions
+
+      int    ticket  = OrderTicket();
+      double pnl_net = OrderProfit() + OrderSwap() + OrderCommission();
+      double minSafe = ClusterMoney_GetMinSafetyProfit();
+      int    ageSec  = (int)(now - OrderOpenTime());
+
+      // [GATE 0: MATURITY] trade troppo giovane -> solo tracking,
+      // niente close. Lascia respirare verso TP1/TP2.
+      if (ageSec < matureSec || ageSec < matureBars * periodSec) {
+         ClusterMoney_TrackPeak(ticket, pnl_net);
+         continue;
+      }
+      // [GATE 0b: RECOVERY GRACE] trade ripreso da reattach -> per
+      // la finestra di recovery NON chiudere mai (warmup completo).
+      int trk = TPSL_FindTrack(ticket);
+      if (trk >= 0 && g_tpsl_tracks[trk].recoveredAt > 0) {
+         int recGrace = (Mode == Aggressive ? 180 : (Mode == Conservative ? 600 : 360));
+         if ((int)(now - g_tpsl_tracks[trk].recoveredAt) < recGrace) {
+            ClusterMoney_TrackPeak(ticket, pnl_net);
+            continue;
+         }
+      }
+      // [GATE 1: SAFETY] non chiudere mai sotto la soglia auto-class.
+      if (pnl_net < minSafe) {
+         ClusterMoney_TrackPeak(ticket, pnl_net);
+         continue;
+      }
+
+      // [GATE 2: PEAK RETRACE] chiudi se profit retrocede X% dal picco
+      // (PeakProfitRetracePercent, default 20%). Il peak deve essere a
+      // sua volta sopra minSafe per evitare chiusure "rumorose".
+      // FASE 4 NEW: richiede anche TP1 hit (se ticket tracked dal
+      // TPSL Manager). Cosi' il trade ha gia' costruito profitto
+      // reale e PeakRetrace non chiude su spike intrabar normale.
+      // PeakProfitLock input (default true) gate-a tutto il GATE 2.
+      if (!PeakProfitLock) continue;
+      if (trk >= 0 && !g_tpsl_tracks[trk].tp1Hit) continue;   // pre-TP1: no peak retrace
+      double peak = ClusterMoney_TrackPeak(ticket, pnl_net);
+      if (peak <= minSafe) continue;
+      double thr = peak * (1.0 - PeakProfitRetracePercent / 100.0);
+      if (pnl_net <= thr) {
+         double cp = (OrderType() == OP_BUY ? Bid : Ask);
+         int    slp = GetAdaptiveSlippagePoints();
+         bool   ok = OrderClose(ticket, OrderLots(), cp, slp, clrYellow);
+         if (ok) {
+            ClusterMoney_RemoveGV(ticket);
+            PrintFormat("[ClusterMoney] PeakRetrace closed ticket=%d peak=%.2f pnl=%.2f thr=%.2f minSafe=%.2f",
+                        ticket, peak, pnl_net, thr, minSafe);
+         } else {
+            PrintFormat("[ClusterMoney] close FAILED ticket=%d err=%d",
+                        ticket, GetLastError());
+         }
+      }
+   }
+}
+
+// ============================================================
+// FASE 8 - LIVE OVERLAY: TP1 / TP2 / TP3 / TPMAX / SL per ticket
+// ============================================================
+// Per ogni g_tpsl_tracks[] disegna HLine_RAY a destra del prezzo:
+//   - SL  (rosso, DASH, label "SL")
+//   - TP1 (lime, DASH, label "TP1")
+//   - TP2 (aqua, DASH, label "TP2")
+//   - TP3 (gold, DASH, label "TP3")
+//   - TPMAX (magenta, DASH, label "TPMAX")
+// Le label cambiano colore quando il TP corrispondente e' stato
+// hittato (verde + "[HIT]") - il BE-move e' gia' fatto da TPSL
+// Manager_OnTick e si vede dall'aggiornamento SL.
+// Cleanup: oggetti con prefisso "OBL_LVL_<ticket>_" vengono
+// eliminati quando il ticket non esiste piu' o e' chiuso.
+// ============================================================
+
+// ============================================================
+// FASE 2 - PROFESSIONAL CHART PALETTE (no rainbow random)
+// Coerente, categorica, distingue projected vs live, bull vs
+// bear, entry/SL/TP/liquidity/trigger/hybrid/invalidation.
+// ============================================================
+#define OBL_PAL_ENTRY_LIMIT      clrGold              // ambra: entry pending limit
+#define OBL_PAL_ENTRY_LIVE       clrYellow            // entry pending DEPLOYED / live
+#define OBL_PAL_ADDON_LIMIT      clrDarkOrange        // add-on pending
+#define OBL_PAL_SL               clrCrimson           // stop loss
+#define OBL_PAL_SL_MOVED         clrRed               // SL spostato (BE+)
+#define OBL_PAL_TP1              C'150,200,150'       // verde tenue
+#define OBL_PAL_TP2              C'80,180,80'         // verde medio
+#define OBL_PAL_TP3              C'40,160,40'         // verde forte
+#define OBL_PAL_TPMAX            clrLime              // verde brillante
+#define OBL_PAL_TP_HIT           clrLimeGreen
+#define OBL_PAL_LIQ_BSL          C'120,200,255'       // ciano chiaro buy-side liq
+#define OBL_PAL_LIQ_BSL_DEEP     clrDodgerBlue
+#define OBL_PAL_LIQ_SSL          C'255,180,120'       // ambra sell-side liq
+#define OBL_PAL_LIQ_SSL_DEEP     clrChocolate
+#define OBL_PAL_BULL_TRIGGER     C'80,200,120'        // verde semi-trasparente
+#define OBL_PAL_BEAR_TRIGGER     C'220,90,80'         // rosso/ambra semi-trasparente
+#define OBL_PAL_HYBRID           clrMagenta
+#define OBL_PAL_HYBRID_ALT       clrGoldenrod
+#define OBL_PAL_INVALIDATION     C'180,40,40'         // rosso scuro (tratteggiato)
+#define OBL_PAL_PROJ_TENUE       C'170,170,180'       // grigio-blu (projected pre-confirm)
+
+color OBL_StrategyColor(string s) {
+   if (s == "FVG")       return clrAqua;
+   if (s == "SMC")       return clrOrange;
+   if (s == "ICT")       return clrGold;
+   if (s == "Reverse")   return clrViolet;
+   if (s == "Breakout")  return clrTomato;
+   if (s == "Grid")      return clrSilver;
+   if (s == "Predicted") return clrDodgerBlue;
+   return clrGray;
+}
+
+void OBL_DrawLevel(string name, double price, color clr, ENUM_LINE_STYLE st,
+                   string text, int fontSize) {
+   if (ObjectFind(0, name) < 0) {
+      ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, name, OBJPROP_STYLE, st);
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, name, OBJPROP_BACK, true);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   }
+   ObjectSetDouble (0, name, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetString (0, name, OBJPROP_TEXT, text);
+}
+
+void OBL_RemoveTicketObjects(int ticket) {
+   string prefix = StringFormat("OBL_LVL_%d_", ticket);
+   int total = ObjectsTotal(0, -1, -1);
+   for (int i = total - 1; i >= 0; i--) {
+      string nm = ObjectName(0, i);
+      if (StringFind(nm, prefix) == 0) ObjectDelete(0, nm);
+   }
+}
+
+datetime g_lvl_overlay_lastUpdate = 0;
+
+void TpSlOverlay_Update() {
+   // throttle: ogni 3 secondi (no flicker, no overhead)
+   if (TimeCurrent() - g_lvl_overlay_lastUpdate < 3) return;
+   g_lvl_overlay_lastUpdate = TimeCurrent();
+
+   // 1) refresh per ogni track attivo
+   for (int t = 0; t < g_tpsl_trackCount; t++) {
+      int ticket = g_tpsl_tracks[t].ticket;
+      if (!OrderSelect(ticket, SELECT_BY_TICKET) || OrderCloseTime() != 0) {
+         OBL_RemoveTicketObjects(ticket);
+         continue;
+      }
+      string strat = g_tpsl_tracks[t].strategy;
+      color  base  = OBL_StrategyColor(strat);
+
+      double sl   = OrderStopLoss();
+      double tp1  = g_tpsl_tracks[t].tp1;
+      double tp2  = g_tpsl_tracks[t].tp2;
+      double tp3  = g_tpsl_tracks[t].tp3;
+      double tpM  = g_tpsl_tracks[t].tpmax;
+
+      string p   = StringFormat("OBL_LVL_%d_", ticket);
+      string lab = StringFormat("%s #%d", strat, ticket);
+
+      // FASE 2/6 - palette professionale: SL crimson, TP1 tenue
+      // -> TPMAX brillante (gradient verde), HIT diventa lime.
+      if (sl  > 0) OBL_DrawLevel(p + "SL",  sl,  OBL_PAL_SL,  STYLE_DASH,
+                                 StringFormat("%s SL",   strat), 8);
+      if (tp1 > 0) OBL_DrawLevel(p + "TP1", tp1,
+                                 (g_tpsl_tracks[t].tp1Hit ? OBL_PAL_TP_HIT : OBL_PAL_TP1),
+                                 STYLE_DOT,
+                                 StringFormat("%s TP1%s", strat,
+                                              g_tpsl_tracks[t].tp1Hit ? " hit" : ""),
+                                 8);
+      if (tp2 > 0) OBL_DrawLevel(p + "TP2", tp2,
+                                 (g_tpsl_tracks[t].tp2Hit ? OBL_PAL_TP_HIT : OBL_PAL_TP2),
+                                 STYLE_DOT,
+                                 StringFormat("%s TP2%s", strat,
+                                              g_tpsl_tracks[t].tp2Hit ? " hit" : ""),
+                                 8);
+      if (tp3 > 0) OBL_DrawLevel(p + "TP3", tp3,
+                                 (g_tpsl_tracks[t].tp3Hit ? OBL_PAL_TP_HIT : OBL_PAL_TP3),
+                                 STYLE_DOT,
+                                 StringFormat("%s TP3%s", strat,
+                                              g_tpsl_tracks[t].tp3Hit ? " hit" : ""),
+                                 8);
+      if (tpM > 0) OBL_DrawLevel(p + "TPMAX", tpM, OBL_PAL_TPMAX, STYLE_DOT,
+                                 StringFormat("%s TPMAX", strat), 8);
+   }
+}
+
+// ============================================================
+// FASE 1 NEW - LIQUIDITY POOLS INTERNAL ONLY (no drawing).
+//
+// La liquidita' (BSL/SSL primary + deep) viene calcolata e
+// cached per uso interno (bias, target, invalidation context)
+// ma NON viene piu' disegnata sul chart.
+//
+// Consumer interni:
+//   - Liq_GetBSL1()/BSL2()/SSL1()/SSL2()  -> ritornano i livelli
+//   - Liq_RemovePoolObjects()             -> cleanup difensivo
+// ============================================================
+datetime g_liq_overlay_lastUpdate = 0;
+double   g_liq_BSL1_cached = 0, g_liq_BSL2_cached = 0;
+double   g_liq_SSL1_cached = 0, g_liq_SSL2_cached = 0;
+int      g_liq_BSL1_sweepN = 0, g_liq_BSL2_sweepN = 0;
+int      g_liq_SSL1_sweepN = 0, g_liq_SSL2_sweepN = 0;
+
+void Liq_RemovePoolObjects() {
+   // Cleanup difensivo: rimuove eventuali OBL_LIQ_* residui
+   // (es. da versioni precedenti dell'EX4) ma non ricrea nulla.
+   int total = ObjectsTotal(0, -1, -1);
+   for (int i = total - 1; i >= 0; i--) {
+      string nm = ObjectName(0, i);
+      if (StringFind(nm, "OBL_LIQ_") == 0) ObjectDelete(0, nm);
+   }
+   g_liq_BSL1_cached = g_liq_BSL2_cached = 0;
+   g_liq_SSL1_cached = g_liq_SSL2_cached = 0;
+   g_liq_BSL1_sweepN = g_liq_BSL2_sweepN = 0;
+   g_liq_SSL1_sweepN = g_liq_SSL2_sweepN = 0;
+}
+
+bool Liq_NeedRefresh(double cached, double fresh, double atr) {
+   if (cached <= 0) return true;
+   if (atr <= 0)   return MathAbs(fresh - cached) > 50 * Point;
+   return MathAbs(fresh - cached) > 0.30 * atr;
+}
+
+// API interna per consumer logici (bias / target liquidity).
+double Liq_GetBSL1() { return g_liq_BSL1_cached; }
+double Liq_GetBSL2() { return g_liq_BSL2_cached; }
+double Liq_GetSSL1() { return g_liq_SSL1_cached; }
+double Liq_GetSSL2() { return g_liq_SSL2_cached; }
+
+void Liq_DrawPools() {
+   // Nome storico mantenuto per non rompere i caller, ma il
+   // comportamento e' diventato "Liq_UpdatePoolsInternal".
+   if (TimeCurrent() - g_liq_overlay_lastUpdate < 10) return;
+   g_liq_overlay_lastUpdate = TimeCurrent();
+
+   int lb = Mini_GetSwingLookback("Liq");
+   if (lb < 10) lb = 10;
+   if (lb > Bars - 2) lb = Bars - 2;
+   if (lb < 5) return;
+   double h1 = iHigh(Symbol(), 0, iHighest(Symbol(), 0, MODE_HIGH, lb, 1));
+   double l1 = iLow (Symbol(), 0, iLowest (Symbol(), 0, MODE_LOW,  lb, 1));
+   double h2 = iHigh(Symbol(), 0, iHighest(Symbol(), 0, MODE_HIGH, lb,  lb + 1));
+   double l2 = iLow (Symbol(), 0, iLowest (Symbol(), 0, MODE_LOW,  lb,  lb + 1));
+   double cur = (Ask + Bid) * 0.5;
+   double atr = iATR(Symbol(), Period(), 14, 1);
+
+   // ---------- BSL1 (solo cache, no draw) ----------
+   if (h1 > cur) {
+      g_liq_BSL1_sweepN = 0;
+      if (Liq_NeedRefresh(g_liq_BSL1_cached, h1, atr)) g_liq_BSL1_cached = h1;
+   } else {
+      g_liq_BSL1_sweepN++;
+      if (g_liq_BSL1_sweepN >= 3) g_liq_BSL1_cached = 0;
+   }
+   // ---------- BSL2 ----------
+   bool bsl2_ok = (h2 > cur && MathAbs(h2 - h1) > 0.50 * atr);
+   if (bsl2_ok) {
+      g_liq_BSL2_sweepN = 0;
+      if (Liq_NeedRefresh(g_liq_BSL2_cached, h2, atr)) g_liq_BSL2_cached = h2;
+   } else {
+      g_liq_BSL2_sweepN++;
+      if (g_liq_BSL2_sweepN >= 3) g_liq_BSL2_cached = 0;
+   }
+   // ---------- SSL1 ----------
+   if (l1 < cur) {
+      g_liq_SSL1_sweepN = 0;
+      if (Liq_NeedRefresh(g_liq_SSL1_cached, l1, atr)) g_liq_SSL1_cached = l1;
+   } else {
+      g_liq_SSL1_sweepN++;
+      if (g_liq_SSL1_sweepN >= 3) g_liq_SSL1_cached = 0;
+   }
+   // ---------- SSL2 ----------
+   bool ssl2_ok = (l2 < cur && MathAbs(l2 - l1) > 0.50 * atr);
+   if (ssl2_ok) {
+      g_liq_SSL2_sweepN = 0;
+      if (Liq_NeedRefresh(g_liq_SSL2_cached, l2, atr)) g_liq_SSL2_cached = l2;
+   } else {
+      g_liq_SSL2_sweepN++;
+      if (g_liq_SSL2_sweepN >= 3) g_liq_SSL2_cached = 0;
+   }
+}
+
 void TPSLManager_OnTick() {
+   // FASE 3+4 - state machine LIVE_UNARMED -> PROTECTED -> BE -> TRAIL.
+   // min-age (mode/TF aware) e min-bars: il trade respira prima
+   // di stringere SL. TP1/2/3 muovono SL solo quando il rispettivo
+   // livello e' effettivamente toccato. No emergency close path.
+   datetime now = TimeCurrent();
+   int armSec = (Mode == Aggressive ? 25 : (Mode == Conservative ? 90 : 50));
+   int armBars = (Period() <= 5 ? 1 : 2);   // M5 -> 1 bar, > M5 -> 2 bar
+   int periodSec = Period() * 60;
+
    for (int i = g_tpsl_trackCount - 1; i >= 0; i--) {
       int ticket = g_tpsl_tracks[i].ticket;
       if (!OrderSelect(ticket, SELECT_BY_TICKET)) {
@@ -21073,20 +22101,72 @@ void TPSLManager_OnTick() {
          TPSL_RemoveTrack(i);
          continue;
       }
-      
+
       double price = (g_tpsl_tracks[i].orderType == OP_BUY) ? Bid : Ask;
       double entry = g_tpsl_tracks[i].entryPrice;
       double currentSL = OrderStopLoss();
       double spread_val = (Ask - Bid);
-      double buffer = spread_val + 2 * Point;
-      
+      // FASE 7+8 NEW - BE buffer STRUTTURALE (no BE-stop su micro-pullback):
+      // base = spread + 2pt; floor strutturale = 0.10 * ATR_now per
+      // assicurare che il BE-move resti realistico anche con volatility
+      // alta (es. XAUUSD post-news). Asset class-aware via ATR.
+      double atr_be = iATR(Symbol(), Period(), 14, 1);
+      double buffer = MathMax(spread_val + 2 * Point, 0.10 * atr_be);
+
       bool isBuy = (g_tpsl_tracks[i].orderType == OP_BUY);
-      
+      int    ageSec = (int)(now - g_tpsl_tracks[i].openedAt);
+      bool   matured = (ageSec >= armSec) && (ageSec >= armBars * periodSec);
+      // FASE 12 - RECOVERY GRACE: trade ripreso da reattach -> per
+      // RECOVERY_GRACE_SEC il TPSL manager osserva senza toccare SL
+      // ne' applicare BE. Permette al sistema di "capire" il trade.
+      int RECOVERY_GRACE_SEC = (Mode == Aggressive ? 90 : (Mode == Conservative ? 240 : 150));
+      if (g_tpsl_tracks[i].recoveredAt > 0 &&
+          (now - g_tpsl_tracks[i].recoveredAt) < RECOVERY_GRACE_SEC) {
+         continue;   // warmup: solo TP-hit detection naturale al prossimo tick
+      }
+
+      // -------- TRANSITION UNARMED -> PROTECTED --------
+      // Una volta passato il periodo di arming, restringi SL a
+      // initialSL (projected) MA con clamp di min-width: se la
+      // distanza projected e' < 0.9 ATR -> usa max(0.9 ATR distance,
+      // sl_proj) per evitare SL microscopici rumor-sensitive.
+      if (g_tpsl_tracks[i].liveState == 0 && matured) {
+         double pSL = g_tpsl_tracks[i].initialSL;
+         if (pSL > 0) {
+            // FASE 3 - min-width clamp (ATR-based, structural)
+            double atr_now = iATR(Symbol(), Period(), 14, 1);
+            double min_dist = 0.90 * atr_now;
+            double dist_proj = MathAbs(entry - pSL);
+            if (dist_proj < min_dist && atr_now > 0) {
+               double widened = (isBuy ? entry - min_dist : entry + min_dist);
+               PrintFormat("[TPSL] tkt=%d PROTECTED clamp: dist_proj=%.5f < min_dist=%.5f -> widen to %.5f",
+                           ticket, dist_proj, min_dist, widened);
+               pSL = widened;
+            }
+            bool tighten = (isBuy ? (pSL > currentSL) : (pSL < currentSL || currentSL <= 0));
+            if (tighten) {
+               if (TPSL_ModifySL(ticket, pSL)) {
+                  g_tpsl_tracks[i].liveState = 1;
+                  PrintFormat("[TPSL] tkt=%d UNARMED->PROTECTED slBroker=%.5f age=%ds",
+                              ticket, pSL, ageSec);
+               }
+            } else {
+               g_tpsl_tracks[i].liveState = 1;
+            }
+         } else {
+            g_tpsl_tracks[i].liveState = 1;
+         }
+      }
+
+      // -------- TP1/TP2/TP3/TRAIL (invariati, ma con guardia matured per BE) --------
       if (isBuy) {
          if (!g_tpsl_tracks[i].tp1Hit && price >= g_tpsl_tracks[i].tp1) {
             g_tpsl_tracks[i].tp1Hit = true;
-            double newSL = entry + buffer;
-            if (newSL > currentSL) TPSL_ModifySL(ticket, newSL);
+            if (matured) {
+               double newSL = entry + buffer;
+               if (newSL > currentSL && TPSL_ModifySL(ticket, newSL))
+                  g_tpsl_tracks[i].liveState = 2;
+            }
          }
          if (!g_tpsl_tracks[i].tp2Hit && price >= g_tpsl_tracks[i].tp2) {
             g_tpsl_tracks[i].tp2Hit = true;
@@ -21096,7 +22176,8 @@ void TPSLManager_OnTick() {
          if (!g_tpsl_tracks[i].tp3Hit && price >= g_tpsl_tracks[i].tp3) {
             g_tpsl_tracks[i].tp3Hit = true;
             double newSL = g_tpsl_tracks[i].tp2;
-            if (newSL > currentSL) TPSL_ModifySL(ticket, newSL);
+            if (newSL > currentSL && TPSL_ModifySL(ticket, newSL))
+               g_tpsl_tracks[i].liveState = 3;
          }
          if (g_tpsl_tracks[i].tp3Hit) {
             double trailDist = (g_tpsl_tracks[i].tpmax - g_tpsl_tracks[i].tp3) * 0.4;
@@ -21107,8 +22188,11 @@ void TPSLManager_OnTick() {
       } else {
          if (!g_tpsl_tracks[i].tp1Hit && price <= g_tpsl_tracks[i].tp1) {
             g_tpsl_tracks[i].tp1Hit = true;
-            double newSL = entry - buffer;
-            if (newSL < currentSL || currentSL <= 0) TPSL_ModifySL(ticket, newSL);
+            if (matured) {
+               double newSL = entry - buffer;
+               if ((newSL < currentSL || currentSL <= 0) && TPSL_ModifySL(ticket, newSL))
+                  g_tpsl_tracks[i].liveState = 2;
+            }
          }
          if (!g_tpsl_tracks[i].tp2Hit && price <= g_tpsl_tracks[i].tp2) {
             g_tpsl_tracks[i].tp2Hit = true;
@@ -21118,7 +22202,8 @@ void TPSLManager_OnTick() {
          if (!g_tpsl_tracks[i].tp3Hit && price <= g_tpsl_tracks[i].tp3) {
             g_tpsl_tracks[i].tp3Hit = true;
             double newSL = g_tpsl_tracks[i].tp2;
-            if (newSL < currentSL || currentSL <= 0) TPSL_ModifySL(ticket, newSL);
+            if ((newSL < currentSL || currentSL <= 0) && TPSL_ModifySL(ticket, newSL))
+               g_tpsl_tracks[i].liveState = 3;
          }
          if (g_tpsl_tracks[i].tp3Hit) {
             double trailDist = MathAbs(g_tpsl_tracks[i].tpmax - g_tpsl_tracks[i].tp3) * 0.4;
@@ -21126,6 +22211,92 @@ void TPSLManager_OnTick() {
             if ((trailSL < currentSL || currentSL <= 0) && trailSL < g_tpsl_tracks[i].tp2)
                TPSL_ModifySL(ticket, trailSL);
          }
+      }
+   }
+}
+
+// ============================================================
+// FASE 5+8 NEW - DYNAMIC TP RECOMPUTE on NEW BAR
+// I TP (tp1/tp2/tp3/tpmax) NON sono numeri congelati a vita.
+// A ogni nuova candela il sistema, per ogni track ancora vivo e
+// non in tp3Hit, ricalcola la ladder con ATR corrente + multipli
+// strategy-specific (stessa Map di TPSL_ComputeLevels). Applica
+// le modifiche solo se:
+//   - il TP corrispondente NON e' gia' hit
+//   - lo spostamento e' >= 0.40 ATR (no micro-aggiornamenti)
+//   - non porta il TP "indietro" rispetto al prezzo corrente
+//     (mai TP gia' superato dal prezzo)
+//   - se trade in PROTECTED+/BE, mantieni R-multiple monotone:
+//     TP1 deve sempre restare >= entry+min_step nella direzione
+// Mantiene g_tpsl_tracks consistente con la realta' di mercato.
+// ============================================================
+void TPSL_RebalanceTPs_OnNewBar() {
+   if (g_tpsl_trackCount <= 0) return;
+   double atr_now = iATR(Symbol(), Period(), 14, 1);
+   if (atr_now <= 0) return;
+   double moveTol = 0.40 * atr_now;
+
+   for (int i = 0; i < g_tpsl_trackCount; i++) {
+      int ticket = g_tpsl_tracks[i].ticket;
+      if (!OrderSelect(ticket, SELECT_BY_TICKET)) continue;
+      if (OrderCloseTime() != 0)                  continue;
+      if (g_tpsl_tracks[i].tp3Hit)                continue;  // trail-phase: niente reset
+      // Skip recovery window: durante il warmup non toccare i TP
+      if (g_tpsl_tracks[i].recoveredAt > 0) {
+         datetime now = TimeCurrent();
+         int recGrace = (Mode == Aggressive ? 90 :
+                        (Mode == Conservative ? 240 : 150));
+         if ((int)(now - g_tpsl_tracks[i].recoveredAt) < recGrace) continue;
+      }
+
+      double newTp1=0, newTp2=0, newTp3=0, newTpM=0;
+      TPSL_ComputeLevels(g_tpsl_tracks[i].orderType,
+                          g_tpsl_tracks[i].entryPrice,
+                          g_tpsl_tracks[i].strategy,
+                          newTp1, newTp2, newTp3, newTpM);
+
+      bool   isBuy = (g_tpsl_tracks[i].orderType == OP_BUY);
+      double price = (isBuy ? Bid : Ask);
+      double minStep = 0.20 * atr_now;
+      // Sanity per TP gia' hit: mantieni il valore esistente
+      // (non rompere la ladder di trigger gia' passati).
+      if (g_tpsl_tracks[i].tp1Hit) newTp1 = g_tpsl_tracks[i].tp1;
+      if (g_tpsl_tracks[i].tp2Hit) newTp2 = g_tpsl_tracks[i].tp2;
+      // Anti-back: TP non puo' essere riportato dietro al prezzo.
+      if (isBuy) {
+         if (!g_tpsl_tracks[i].tp1Hit && newTp1 <= price + minStep)
+            newTp1 = price + minStep;
+         if (newTp2 <= newTp1 + minStep) newTp2 = newTp1 + minStep;
+         if (newTp3 <= newTp2 + minStep) newTp3 = newTp2 + minStep;
+         if (newTpM <= newTp3 + minStep) newTpM = newTp3 + minStep;
+      } else {
+         if (!g_tpsl_tracks[i].tp1Hit && newTp1 >= price - minStep)
+            newTp1 = price - minStep;
+         if (newTp2 >= newTp1 - minStep) newTp2 = newTp1 - minStep;
+         if (newTp3 >= newTp2 - minStep) newTp3 = newTp2 - minStep;
+         if (newTpM >= newTp3 - minStep) newTpM = newTp3 - minStep;
+      }
+      // Apply with movement tolerance (no micro-flicker)
+      bool changed = false;
+      if (!g_tpsl_tracks[i].tp1Hit &&
+          MathAbs(newTp1 - g_tpsl_tracks[i].tp1) >= moveTol) {
+         g_tpsl_tracks[i].tp1 = newTp1; changed = true;
+      }
+      if (!g_tpsl_tracks[i].tp2Hit &&
+          MathAbs(newTp2 - g_tpsl_tracks[i].tp2) >= moveTol) {
+         g_tpsl_tracks[i].tp2 = newTp2; changed = true;
+      }
+      if (MathAbs(newTp3 - g_tpsl_tracks[i].tp3) >= moveTol) {
+         g_tpsl_tracks[i].tp3 = newTp3; changed = true;
+      }
+      if (MathAbs(newTpM - g_tpsl_tracks[i].tpmax) >= moveTol) {
+         g_tpsl_tracks[i].tpmax = newTpM; changed = true;
+      }
+      if (changed) {
+         PrintFormat("[TPSL] REBAL tkt=%d %s ATR=%.5f -> TP1=%.5f TP2=%.5f TP3=%.5f TPMAX=%.5f",
+                     ticket, g_tpsl_tracks[i].strategy, atr_now,
+                     g_tpsl_tracks[i].tp1, g_tpsl_tracks[i].tp2,
+                     g_tpsl_tracks[i].tp3, g_tpsl_tracks[i].tpmax);
       }
    }
 }
@@ -21221,14 +22392,24 @@ void PositionManager_ApplyTrailing(int idx) {
                       }
 
                       void ProfitGuards_OnTimer() {
-                        // PTP management (30s debounce,
-                        // 300s timeout)
-                        __AP_PTP_ManageAll(30, 300);
-
-                        // Emergency daily DD check
+                        // FASE 4.4 (Patch 3): __AP_PTP_ManageAll DEPRECATED.
+                        // Tutto il profit-close per ticket vive ora in
+                        // ClusterMoney_OnTick (chiamato da Orchestrator_OnTick
+                        // ogni tick, non ogni 30s).
+                        //
+                        // FASE 5 (Patch 2): PnLTracker_EmergencyCheck lavora
+                        // in PERCENTUALE diretta (dd in 0..100), quindi
+                        // passare MaxDailyDDPercent DIRETTO (no /100.0).
                         if (ChallengePassage)
-                          PnLTracker_EmergencyCheck(5.0); // 5% max daily DD for
-                                                          // prop firms
+                          PnLTracker_EmergencyCheck(MaxDailyDDPercent);
+
+                        // Patch 7: cleanup GV PTP_PEAK_* orfane ogni ~60
+                        // tick di timer (timer = 1s ufficiale -> ~60s).
+                        static int __cm_cleanup_cnt = 0;
+                        if (++__cm_cleanup_cnt >= 60) {
+                          __cm_cleanup_cnt = 0;
+                          ClusterMoney_CleanupOrphanGV();
+                        }
                       }
 
                       void ProfitGuards_CheckAll() {
@@ -21283,6 +22464,12 @@ void PositionManager_ApplyTrailing(int idx) {
                       }
 
                       void __AP_PTP_ManageAll(int debounceSec, int timeoutSec) {
+                        // FASE 9 (Patch 3): DEPRECATED. Sostituita da
+                        // ClusterMoney_OnTick (path unico per profit-close
+                        // peak-retrace per ticket). Lasciata definita per
+                        // non rompere call-site indiretti; early return.
+                        return;
+                        // ---- unreachable legacy body below ----
                         for (int i = OrdersTotal() - 1; i >= 0; i--) {
                           if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
                             continue;
@@ -23387,7 +24574,7 @@ double __AP_EstimatedSpreadCost(int ticket = -1) {
 }
 
 int GetMagicNumber(string strategy) {
-  return MagicNumberBase + StringToInteger(StringSubstr(strategy, 0, 3));
+  return MagicNumberBase + (int)StringToInteger(StringSubstr(strategy, 0, 3));
 }
 
 // Maps canonical strategy names to their configured magic numbers
@@ -23450,7 +24637,7 @@ void FireBurst(int type, double lots, double sl, double tp, int magic, string ow
   bool _wRes = SafeOrderSend(Symbol(), type, lots, price, Slippage, sl, tp, owner + "|" + label, magic, 0, clrNONE);
 }
 
-void Strategy_ADX_Logic()       { if (!AllowStrategyToTrade()) return; double adx = iADX(Symbol(),0,14,PRICE_CLOSE,MODE_MAIN,1); double di_p = iADX(Symbol(),0,14,PRICE_CLOSE,MODE_PLUSDI,1); double di_m = iADX(Symbol(),0,14,PRICE_CLOSE,MODE_MINUSDI,1); if (adx < 25) return; int dir = (di_p > di_m) ? 1 : -1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
+void Strategy_ADX_Logic()       { if (!AllowStrategyToTrade()) return; double adx = iADX(Symbol(),0,14,PRICE_CLOSE,MODE_MAIN,1); double di_p = iADX(Symbol(),0,14,PRICE_CLOSE,MODE_PLUSDI,1); double di_m = iADX(Symbol(),0,14,PRICE_CLOSE,MODE_MINUSDI,1); if (adx < GetAdaptive_ADX_Trend()) return; int dir = (di_p > di_m) ? 1 : -1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_Alligator_Logic() { if (!AllowStrategyToTrade()) return; double jaw = iAlligator(Symbol(),0,13,8,8,5,5,3,MODE_SMMA,PRICE_MEDIAN,MODE_GATORJAW,1); double lip = iAlligator(Symbol(),0,13,8,8,5,5,3,MODE_SMMA,PRICE_MEDIAN,MODE_GATORLIPS,1); int dir = (lip > jaw) ? 1 : -1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_AC_Logic()        { if (!AllowStrategyToTrade()) return; double ac0=iAC(Symbol(),0,0),ac1=iAC(Symbol(),0,1); int dir=(ac0>ac1)?1:-1; if (MathAbs(ac0)<0.0001*Point) return; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_AD_Logic()        { if (!AllowStrategyToTrade()) return; double ad0=iAD(Symbol(),0,0),ad1=iAD(Symbol(),0,1); int dir=(ad0>ad1)?1:-1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
@@ -23666,10 +24853,142 @@ string Orchestrator_DominantOwner() {
                                             return true;
                                           }
 
+// ============================================================
+// FASE 12 - EA REATTACH SAFE RECOVERY ENGINE
+//
+// Quando l'EA viene caricato (OnInit) il sistema scansiona TUTTI
+// gli ordini aperti del simbolo, identifica quelli appartenenti
+// al sistema tramite magic number e li riprende in gestione in
+// modo prudente:
+//   - g_ownerRegistry rebuild
+//   - g_tpsl_tracks rebuild per market positions (isRecovery=true)
+//   - g_active_setups rebuild per pending LIMIT (recovered_setup)
+//   - NO close, NO invalidate, NO SL squeeze
+//   - warmup grace window dove TPSL/ClusterMoney non toccano nulla
+//   - overlay chart si auto-ridisegna ad ogni tick via
+//     TpSlOverlay_Update + Pending_Lifecycle_Tick
+// ============================================================
+
+datetime g_ea_recoveryDoneAt = 0;
+int      g_ea_recoveredCount = 0;
+int      g_ea_recoveredPendingCount = 0;
+
+string EA_MagicToOwner(int magic) {
+   if (magic == FVGMagic)       return "FVG";
+   if (magic == SMCMagic)       return "SMC";
+   if (magic == ICTMagic)       return "ICT";
+   if (magic == ReverseMagic)   return "Reverse";
+   if (magic == BreakoutMagic)  return "Breakout";
+   if (magic == GridMagic)      return "Grid";
+   if (magic == PredictedMagic) return "Predicted";
+   return "";
+}
+
+void EA_ReattachRecovery() {
+   int total = OrdersTotal();
+   if (total <= 0) {
+      g_ea_recoveryDoneAt = TimeCurrent();
+      PrintFormat("[Recovery] no open orders to recover");
+      return;
+   }
+   int recLive = 0, recPend = 0, skipped = 0;
+   double atr_now = iATR(Symbol(), Period(), 14, 1);
+
+   for (int i = 0; i < total; i++) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if (OrderSymbol() != Symbol())                   continue;
+      int    magic    = OrderMagicNumber();
+      string owner    = EA_MagicToOwner(magic);
+      if (owner == "") { skipped++; continue; }   // non nostro
+
+      int    ticket   = OrderTicket();
+      int    otype    = OrderType();
+      double openPx   = OrderOpenPrice();
+      double slBroker = OrderStopLoss();
+      double tpBroker = OrderTakeProfit();
+      double lots     = OrderLots();
+
+      // 1) Owner registry rebuild (idempotente: Register skippa duplicati)
+      OwnerRegistry_Register(ticket, owner, owner, magic,
+                             "RECOVERED_ON_ATTACH", 0.0, "standard",
+                             OrderComment());
+
+      // 2) MARKET position -> TPSL track recovery (no SL squeeze)
+      if (otype == OP_BUY || otype == OP_SELL) {
+         int normalizedType = (otype == OP_BUY ? OP_BUY : OP_SELL);
+         double initialSL = (slBroker > 0)
+            ? slBroker
+            : ((otype == OP_BUY) ? openPx - 1.40 * atr_now
+                                  : openPx + 1.40 * atr_now);
+         TPSL_RegisterTrade(ticket, magic, owner, normalizedType,
+                            openPx, initialSL, true);  // isRecovery=true
+         recLive++;
+         continue;
+      }
+
+      // 3) PENDING LIMIT -> setup recovery
+      if (otype == OP_BUYLIMIT || otype == OP_SELLLIMIT) {
+         int dir = (otype == OP_BUYLIMIT ? 1 : -1);
+         double pendSL = (slBroker > 0)
+            ? slBroker
+            : ((dir == 1) ? openPx - 1.40 * atr_now
+                          : openPx + 1.40 * atr_now);
+         // Invalidation: usa l'SL come livello di invalidazione di default
+         int parentId = Setup_Register(owner, dir, openPx, pendSL,
+                                       1.0, 60, openPx);
+         Setup_AttachPending(parentId, ticket, openPx, pendSL, tpBroker);
+         recPend++;
+         continue;
+      }
+      // STOP orders / BUYSTOP/SELLSTOP: registry only, no rebind
+      skipped++;
+   }
+
+   g_ea_recoveredCount        = recLive;
+   g_ea_recoveredPendingCount = recPend;
+   g_ea_recoveryDoneAt        = TimeCurrent();
+   PrintFormat("[Recovery] DONE live=%d pending=%d skipped=%d (warmup grace active)",
+               recLive, recPend, skipped);
+}
+
                                           void Orchestrator_OnInit() {
                                             g_orch_lastBar = 0;
                                             g_orch_newBar = false;
                                             g_orch_tickCounter = 0;
+
+                                            // FASE 2.2 (Patch 6): bootstrap
+                                            // unico - estratte SOLO le 3
+                                            // righe utili da Init() legacy
+                                            // (mai chiamata). g_startEquity
+                                            // e g_peakEquity erano dichiarati
+                                            // ma mai inizializzati: senza
+                                            // questi il RiskEngine partiva da
+                                            // 0 -> DD totale sempre 100% e
+                                            // peak retrace lock impossibile.
+                                            if (!IsDllsAllowed()) {
+                                              Alert("DLLs must be allowed "
+                                                    "for bridge functionality");
+                                            }
+                                            g_startEquity    = AccountEquity();
+                                            g_peakEquity     = AccountEquity();
+                                            g_tradingBlocked = false;
+                                            // PATCH C: attach grace period.
+                                            // Per i primi g_ea_attach_grace_sec
+                                            // secondi dopo init, NESSUN market
+                                            // fallback delle 5 owner non-grid/
+                                            // non-predicted. Solo LIMIT pending.
+                                            // Evita il "trade casuale su attach"
+                                            // quando il prezzo e' gia' dentro
+                                            // una zona storica al momento del
+                                            // collegamento.
+                                            g_ea_attachTime = TimeCurrent();
+
+                                            // FASE 1 - cleanup OBL_LIQ_*
+                                            // residui (da EX4 precedente che
+                                            // li disegnava). La logica
+                                            // liquidita' resta interna ma
+                                            // niente piu' overlay chart.
+                                            Liq_RemovePoolObjects();
 
                                             // Initialize subsystems
                                             IndicatorManager_Init();
@@ -23694,12 +25013,55 @@ string Orchestrator_DominantOwner() {
                                             TrigPanel_Init();
                                             SmartPanel_Init();
 
+                                            // FASE 12 - REATTACH SAFE
+                                            // RECOVERY: scansiona TUTTI gli
+                                            // ordini aperti del simbolo,
+                                            // riprende ownership/TPSL/setup
+                                            // per i ticket con magic owner
+                                            // valido. NO close automatico.
+                                            // Recovery grace window attiva
+                                            // su TPSL Manager e ClusterMoney.
+                                            EA_ReattachRecovery();
+
+                                            // FASE 2.2 (Patch 6): UNICO
+                                            // EventSetTimer ufficiale. Il
+                                            // timer scatena OnTimer ->
+                                            // Orchestrator_OnTimer ->
+                                            // ProfitGuards_OnTimer +
+                                            // ClusterMoney_CleanupOrphanGV
+                                            // (vedi FASE 4.3). RGB_InitCycle
+                                            // NON deve piu' chiamare
+                                            // EventSetTimer (rimosso in
+                                            // FASE 9) altrimenti collisione.
+                                            EventSetTimer(1);
+
                                             SmartLog("INFO", "Orchestrator",
                                                      "All strategies "
                                                      "initialized");
                                           }
 
                                           void Orchestrator_OnDeinit() {
+                                            // FASE 2.2 (Patch 6 + 7): kill
+                                            // timer ufficiale + cleanup di
+                                            // tutte le GlobalVariable PTP_PEAK_*
+                                            // create da ClusterMoney_OnTick
+                                            // (vedi FASE 4.3) per evitare di
+                                            // lasciare stato sporco nel terminal
+                                            // dopo Remove dell'EA.
+                                            EventKillTimer();
+                                            ClusterMoney_CleanupAllGV();
+                                            // FASE 8+11: cleanup overlay TP/SL
+                                            // ticket (OBL_LVL_*) e trigger OF
+                                            // EXE bridge (OBL_OF_*).
+                                            for (int __i = ObjectsTotal(0, -1, -1) - 1; __i >= 0; --__i) {
+                                              string __nm = ObjectName(0, __i);
+                                              if (StringFind(__nm, "OBL_LVL_") == 0 ||
+                                                  StringFind(__nm, "OBL_OF_")  == 0 ||
+                                                  StringFind(__nm, "OBL_LIQ_") == 0 ||
+                                                  StringFind(__nm, "OBL_STG_") == 0) {
+                                                ObjectDelete(0, __nm);
+                                              }
+                                            }
                                             Panels_Cleanup();
                                             Bridge_Shutdown();
                                             SmartLog_Destroy();
@@ -23710,8 +25072,21 @@ void Orchestrator_OnTick() {
    // Phase 1 hooks
    SpreadFilter_Update();
    NewsPolicy_Update();
-   TPSLManager_OnTick();
-   
+   TPSLManager_OnTick();        // FASE 1: ladder TP1/2/3/Max + trailing SL
+                                // (ora con entryPrice corretto).
+   TpSlOverlay_Update();        // FASE 8: overlay live HLine TP1/2/3/MAX/SL
+                                // per ticket (throttled 3s).
+   Liq_DrawPools();             // FASE 8 - liquidity pools BSL/SSL adaptive.
+   ManageOpenPositions();       // FASE 2.1: breakeven + trailing classici
+                                // (riga 17287, prima MAI chiamata - causa
+                                // root del "profit -> perdita").
+   ClusterMoney_OnTick();       // FASE 4: UNICA authority per safe close
+                                // (peak retrace + min profit auto-class).
+   Grid_AutoAverage();          // FASE 6.2: mediazione automatica Grid
+                                // (no doppia chiusura con ClusterMoney).
+   RiskEngine_Update();         // FASE 5.3: popola g_risk per i pre-flight
+                                // della prossima entry.
+
    g_orch_newBar = Orchestrator_IsNewBar();
    g_orch_tickCounter++;
 
@@ -23724,6 +25099,14 @@ void Orchestrator_OnTick() {
    // === LEVEL 2: ICT/SMC Professional Triggers update ===
    if (g_orch_newBar) {
       UpdateOrderBlockDatabase();
+      // FASE 4 - Setup Thinking Engine: rivaluta staging map ad
+      // ogni nuova candela (decay quality vecchi + log mappa).
+      Staging_OnNewBar();
+      // FASE 5+8 NEW - i TP dei trade LIVE non sono numeri congelati:
+      // ricalcola TP1/2/3/MAX con ATR corrente, clamp anti-back e
+      // movement tolerance, cosi' la ladder si adatta al contesto
+      // di mercato (volatility regime) senza chasing.
+      TPSL_RebalanceTPs_OnNewBar();
    }
 
    // === LEVEL 2: Grid FTMO-safe state management ===
@@ -23750,6 +25133,15 @@ void Orchestrator_OnTick() {
    // missing or silent hub never blocks the EA: helpers fall back to
    // pure-EA Hybrid + Pattern + Indicator + Filter behaviour.
    Bridge_QueryAI(Symbol(), Orchestrator_DominantOwner());
+   // Stream live `context_push` (account/equity/perf_*/positions[]) sulla
+   // PUSH port 5557 ogni ~3s. La UI dell'hub (ACCOUNT MATRIX,
+   // PERFORMANCE METRICS, ACTIVE POSITIONS) si nutre di questo.
+   AIBridge_OnTick(Symbol());
+   // Drain dei topic PUB dell'hub (oblivious.heartbeat / .command /
+   // .news / .bookmap / .decision) ad ogni tick. Senza questo i comandi
+   // del Hub e il fast-path orderflow arriverebbero solo via OnTimer
+   // (ogni 30s), perdendo eventi e reagendo in ritardo.
+   AIBridge_Poll();
 
    // === LEVEL 1: Canonical strategy dispatch ===
    // Predicted (AI-driven news+context entries)
@@ -23758,17 +25150,17 @@ void Orchestrator_OnTick() {
    // FVG (Fair Value Gap entries)
    if (FVG && NewsPolicy_CanOpen("FVG")) FVG_Logic();
 
-   // SMC + ICT dispatch (separate strategies)
-   // SMC (Smart Money Concepts)
+   // SMC + ICT dispatch (separate strategies). FASE 2 - usa
+   // Mode_MinSecondsBetweenStaged() TF-scaled cosi' SMC/ICT non
+   // restano bloccate per 60s su M1 (= 1h reale).
    if (SMC && NewsPolicy_CanOpen("SMC")) {
-      if (TimeCurrent() - lastTradeTime_SMC >= MinSecondsBetweenTrades
+      if (TimeCurrent() - lastTradeTime_SMC >= Mode_MinSecondsBetweenStaged()
           && CountOpenOrders(SMCMagic) < MaxOpenTradesPerStrat)
          Strategy_SMC_Logic();
    }
 
-   // ICT (Inner Circle Trader)
    if (ICT && NewsPolicy_CanOpen("ICT")) {
-      if (TimeCurrent() - lastTradeTime_ICT >= MinSecondsBetweenTrades
+      if (TimeCurrent() - lastTradeTime_ICT >= Mode_MinSecondsBetweenStaged()
           && CountOpenOrders(ICTMagic) < MaxOpenTradesPerStrat)
          Strategy_ICT_Logic();
    }
@@ -23778,11 +25170,19 @@ void Orchestrator_OnTick() {
    // Grid (adaptive range reversion  ranging regime)
    ExecuteStrategies();  // handles Grid + Reverse with regime gating
 
-   // Panel updates (every tick)
-   PnL_CalcFromHistory();
-   DynPanel_Update();
-   TrigPanel_Update();
-   SmartPanel_Update();
+   // Panel updates — throttled to PANELS_UPDATE_MS to keep the UI
+   // fluid without flooding the chart with redraws on tick-heavy
+   // symbols. PnL_CalcFromHistory walks the closed-order history so
+   // it's especially expensive on long-lived accounts; tying it to
+   // the same gate keeps OnTick light.
+   uint nowMs = GetTickCount();
+   if (nowMs - g_panelsLastUpdate >= PANELS_UPDATE_MS) {
+      g_panelsLastUpdate = nowMs;
+      PnL_CalcFromHistory();
+      DynPanel_Update();
+      TrigPanel_Update();
+      SmartPanel_Update();
+   }
 }
 
                                           void Orchestrator_OnTimer() {
@@ -23797,6 +25197,16 @@ void Orchestrator_OnTick() {
 
                                             // Profit guards timer check
                                             ProfitGuards_OnTimer();
+
+                                            // FASE 2 - Pending Lifecycle Manager
+                                            // (smart KEEP/MODIFY/CANCEL/EXPIRE
+                                            // per pending FVG/SMC/ICT/Reverse/Breakout)
+                                            Pending_Lifecycle_Tick();
+
+                                            // FASE 2-5 - Staging Tick (DRAWN ->
+                                            // PENDING_ELIGIBLE -> DEPLOYED) per
+                                            // i setup pre-deploy delle 5 owner.
+                                            Staging_Tick();
 
                                             // OTE system timer
                                             AIP2_TimerHandler(MagicNumberBase +
@@ -23813,13 +25223,19 @@ void Orchestrator_OnTick() {
                                             UIToggles_OnChartEvent(
                                                 id, lparam, dparam, sparam);
 
-                                            // Forward to dashboard
+                                            // Forward to dashboard (legacy
+                                            // dashboard is unreachable by
+                                            // default but this stays for
+                                            // backward compatibility — see
+                                            // Dashboard_OnChartEvent guard).
                                             Dashboard_OnChartEvent(
                                                 id, lparam, dparam, sparam);
 
                                             // Trigger panel click handler
-                                            if (id == CHARTEVENT_OBJECT_CLICK)
+                                            if (id == CHARTEVENT_OBJECT_CLICK) {
                                                TrigPanel_OnClick(sparam);
+                                               SmartPanel_OnClick(sparam);
+                                            }
                                           }
 
 void DispatchIndicatorStrategies() {
@@ -24782,8 +26198,8 @@ double Score_Counterattack(){
 
 double Score_Kicking(){
       double ok = 0;
-      if (Score_Marubozu() > 80 && (Close[1] > Open[1] && Close[0] < Open[0] ||
-                                    Close[1] < Open[1] && Close[0] > Open[0]))
+      if (Score_Marubozu() > 80 && (((Close[1] > Open[1]) && (Close[0] < Open[0])) ||
+                                    ((Close[1] < Open[1]) && (Close[0] > Open[0]))))
         ok = 1;
       return znorm(ok, 0.5); }
 
@@ -25752,6 +27168,7 @@ double PercentileRange(int lookback, double q)
       if (n <= 1)
         return RangeAt(1);
       double arr[512];
+      ArrayInitialize(arr, 0.0);
       int cnt = 0;
       int cap = (int)MathMin(n, 512);
       for (int i = 1; i <= cap; i++)
@@ -26057,11 +27474,9 @@ const int HYB_QUALITY_MIN_BASE  = 55;  // baseline model quality soft threshold
 const int HYB_PENALTY_MAX_BASE  = 70;  // baseline penalty above which we soft-discourage
 
 // Symbol-class taxonomy used by the adaptive thresholds.
-#define HYB_SYM_FX_MAJOR   1   // EURUSD / GBPUSD / USDJPY / AUDUSD / NZDUSD / USDCHF / USDCAD
-#define HYB_SYM_METAL      2   // XAUUSD / XAGUSD / XPDUSD / XPTUSD
-#define HYB_SYM_INDEX      3   // US100 / US500 / US30 / GER40 / UK100 / JP225 ...
-#define HYB_SYM_CRYPTO     4   // BTCUSD / ETHUSD / LTCUSD ...
-#define HYB_SYM_OTHER      0
+// FASE 7 (Patch 5): HYB_SYM_* macros spostate in cima al file
+// (sezione INPUT/USER PARAMETERS) per visibilita' globale. Definizioni
+// originali rimosse da qui; valori identici.
 
 // Cached classification (computed once per symbol).
 int    g_hyb_sym_class       = -1;
@@ -26647,12 +28062,25 @@ double Hybrid_QualityFor(string strat) {
 }
 
 bool Hybrid_ShouldDiscourage(string strat) {
-   // SOFT hint only: returns true when we want the owner to skip / downgrade.
-   // Hard gates (spread, news, license, lot, schedule) are unaffected.
+   // FASE 2A - support engine, NON hard blocker default:
+   // ritorna true SOLO per cancel signal davvero estremo
+   // (g_hyb_cancel_signal confermato dal bridge). La penalty
+   // alta + low confidence ora produce SOLO un log soft - la
+   // qualita' viene gia' abbassata da Hybrid_RefineConfidence
+   // e poi filtrata da Mode_QualityFloor downstream.
    if (g_hyb_cancel_signal && strat != "Predicted") return true;
    if (g_hyb_penalty_score >= Hyb_PenaltyMaxNow() &&
        g_hyb_confidence    <  HybridMinConfidence &&
-       strat != "Predicted") return true;
+       strat != "Predicted") {
+      static datetime __hyb_lastLog = 0;
+      if (TimeCurrent() - __hyb_lastLog > 30) {
+         __hyb_lastLog = TimeCurrent();
+         PrintFormat("[Hybrid] %s soft-penalty (score=%.1f conf=%.1f) - quality downgrade only, no veto",
+                     strat, g_hyb_penalty_score, g_hyb_confidence);
+      }
+      // NO return true qui: la decisione viene presa a valle dalla
+      // quality floor by Mode (Mode_QualityFloor + Hybrid_QualityFor).
+   }
    return false;
 }
 
@@ -26674,8 +28102,12 @@ bool Hybrid_ShouldDiscourage(string strat) {
 
 
 int Init() {
-   // EA startup initialization (called from OnInit)
-   // EA startup initializations (called from OnInit)
+   // FASE 9 (Patch 6): DEPRECATED - mai chiamata da OnInit. Le 3 righe
+   // utili (DLLs check + EventSetTimer + g_startEquity/g_peakEquity)
+   // sono state fuse in Orchestrator_OnInit (vedi FASE 2.2). Lasciata
+   // definita per non rompere call-site indiretti; early return.
+   return INIT_SUCCEEDED;
+   // ---- unreachable legacy body below ----
    if (!IsDllsAllowed()) {
    Alert(
    "DLLs must be allowed for bridge functionality");
@@ -27779,7 +29211,8 @@ void LoadNewsFromConfig(){
 
 string AIBC_ClassifyStyle(long magic, string sym) {
    string _aibc_tmp = AIBC_InferStrategyName(magic, sym);
-   string n = StringToUpper(_aibc_tmp);
+   string n = _aibc_tmp;
+   StringToUpper(n);
    if (StringFind(n, "GRID") >= 0)
       return "GRID";
    if (StringFind(n, "REVERS") >= 0 || n == "REVERSE")
@@ -27806,7 +29239,8 @@ string AIBC_ClassifyStyle(long magic, string sym) {
                                                    : (mode == 2
                                                           ? 0.80
                                                           : 0.60)); // base
-                                          string st = StringToUpper(style);
+                                          string st = style;
+                                          StringToUpper(st);
                                           if (st == "SCALPING" ||
                                               st == "REVERSAL")
                                             w -= 0.15;
@@ -28449,17 +29883,16 @@ string AIBC_ClassifyStyle(long magic, string sym) {
                                           }
 
                                           void FVGStrategy() {
-                                            if (!GlobalStrategyGuards())
-                                              return;
-                                            // STRATEGIA FAIR VALUE GAP
-                                            // Strategia basata su Fair
-                                            // Value Gap con conferme
-                                            // multiple di indicatori.
-                                            if (IsFVG()) {
-                                              double sl = Low[1] - EATR(Symbol(), 0, 14);
-                                              double tp = High[1] + (High[1] - sl);
-                                              ExecuteBuy(Lots, sl, tp, "FVG");
-                                            }
+                                            // PATCH I (DEPRECATED): legacy
+                                            // FVG market-first che apriva
+                                            // solo BUY su IsFVG() senza
+                                            // SELL e senza LIMIT. Sostituita
+                                            // da Strategy_FVG_Logic_v2()
+                                            // (LIMIT-first proximal/CE/distal
+                                            // con Hybrid entry-zone). Early
+                                            // return per sicurezza nel caso
+                                            // qualche path legacy la richiami.
+                                            return;
                                           }
 
                                           bool AIBC_GetAlwaysAttach() {
@@ -28902,7 +30335,7 @@ string AIBC_ClassifyStyle(long magic, string sym) {
 
                                                 for (int i = 0; i < n; i++) {
                                                   int sh = c0 + i;
-                                                  vols[i] = iVolume(
+                                                  vols[i] = (double)iVolume(
                                                       Symbol(), PERIOD_CURRENT,
                                                       sh);
                                                   bods[i] = MathAbs(Close[sh] -
@@ -28934,7 +30367,7 @@ string AIBC_ClassifyStyle(long magic, string sym) {
                                                 // (c1): dovrebbe essere outlier
                                                 // positivo
                                                 double v1 =
-                                                    iVolume(Symbol(),
+                                                    (double)iVolume(Symbol(),
    PERIOD_CURRENT, c1);
                                                 double b1 = MathAbs(Close[c1] -
    Open[c1]);
@@ -29039,7 +30472,7 @@ string AIBC_ClassifyStyle(long magic, string sym) {
                                               int &confidence) {
                                             // Bridge-based: read from in-memory
                                             // AI signal state
-                                            confidence = g_aiSignalConf;
+                                            confidence = (int)g_aiSignalConf;
                                             // Stale check: discard signal older
                                             // than AISignalStaleSeconds
                                             if (TimeCurrent() - g_aiSignalTime >
@@ -29263,6 +30696,43 @@ struct OrderOwnership {
 OrderOwnership g_orderOwnership[OWNERSHIP_MAX];
 int            g_ownershipCount = 0;
 
+// ============================================================
+// R8 — Hub-driven HOLD state.
+//
+// Two layers are supported (both controlled remotely via the
+// command bus from Electron / VPS / Mobile gateway):
+//
+//   * Global hold (`g_hold_global = true`): blocks ALL new
+//     openings, both hub-driven (EXECUTE_ORDER) and owner-strategy
+//     local entries. NEVER auto-closes anything; only stops new
+//     position/pending creation.
+//
+//   * Per-owner hold (`g_hold_owner[i]`): blocks new openings for
+//     a SINGLE owner-strategy. Slot per owner — bounded array.
+//
+// State is idempotent: re-issuing HOLD/RESUME on the same target
+// is a no-op (just refreshes the reason/timestamp). State is
+// purely in-memory: an EA restart clears every hold (failsafe).
+//
+// Owner-strategies see the hold transparently because
+// NewsPolicy_CanOpen() — already the single per-strategy entry
+// gate — returns false when a matching hold is active. The hub
+// command path (Cmd_HandleExecute) re-checks the same flags as
+// part of its own HARD GATES.
+// ============================================================
+#define HOLD_OWNER_MAX 16
+bool     g_hold_global             = false;
+datetime g_hold_global_since       = 0;
+string   g_hold_global_reason      = "";
+struct OwnerHold {
+   string   owner;
+   bool     active;
+   datetime since;
+   string   reason;
+};
+OwnerHold g_hold_owner[HOLD_OWNER_MAX];
+int       g_hold_owner_count = 0;
+
 // Forward declarations (definitions further below).
 bool   ZMQ_Init();
 void   ZMQ_Shutdown();
@@ -29273,11 +30743,28 @@ void   AI_HandleHeartbeat(string body);
 void   AI_HandleCommand(string body);
 void   AI_HandleNews(string body);
 void   AI_HandleBookmap(string body);
+void   AI_HandleDecision(string body);
 void   Cmd_HandleExecute(string body);
 void   Cmd_HandleHold(string body);
 void   Cmd_HandleCancel(string body);
 void   Cmd_HandleInvalidate(string body);
 void   Cmd_HandleRefineTPSL(string body);
+// R8 — explicit / mobile-friendly verbs
+void   Cmd_HandleClosePosition(string body);
+void   Cmd_HandleCancelPending(string body);
+void   Cmd_HandleHoldGlobal(string body);
+void   Cmd_HandleResumeGlobal(string body);
+void   Cmd_HandleCloseAllByOwner(string body);
+void   Cmd_HandleCancelAllPendingByOwner(string body);
+// R8 — hub-driven HOLD state used by NewsPolicy_CanOpen + Cmd_HandleExecute
+bool   Hub_HoldGlobal_IsActive();
+bool   Hub_HoldOwner_IsActive(string owner);
+void   Hub_HoldGlobal_Set(bool on, string reason);
+void   Hub_HoldOwner_Set(string owner, bool on, string reason);
+// R8 — payload-aware field helpers (read from `payload` first, then envelope)
+string Cmd_PField(string body, string scope, string key);
+double Cmd_PDouble(string body, string scope, string key, double def);
+int    Cmd_PInt(string body, string scope, string key, int def);
 int    Ownership_Add(int ticket, int magic, string owner, string source, int ocoPeer, string correlation);
 int    Ownership_FindByTicket(int ticket);
 bool   Ownership_Remove(int ticket);
@@ -29498,6 +30985,104 @@ bool AIBridge_SendRequest(string request) {
                                               g_ai_virtualTrail = 0;
                                           }
 
+// ============================================================
+// CONTEXT-PUSH ENRICHMENT — positions[] / pending[] JSON
+// ------------------------------------------------------------
+// AIBridge_SendMarketData publishes a JSON `context_push` over the
+// ZMQ PUSH socket. Historically this carried scalar market context
+// only (bid/ask/atr/rsi/...). The Hub's MobileGateway exposes
+// `positions[]` + `pending[]` to paired mobile devices but until now
+// the EA never emitted those arrays, so the mobile dashboard kept
+// them empty. The two helpers below fix that surgically.
+//
+//   * Both walk the live order book.
+//   * Both honour Panel_IsOurMagic so non-Oblivious manual trades
+//     never leak into the Hub stream.
+//   * Numeric fields are normalised to the symbol Digits.
+//   * Output is a self-contained JSON array string — caller concatenates
+//     it after the existing StringFormat result, NEVER inside it (to
+//     avoid disturbing the StringFormat arg count).
+// ============================================================
+string Oblivious_BuildPositionsJson() {
+   string out   = "[";
+   bool   first = true;
+   for (int i = OrdersTotal() - 1; i >= 0; i--) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      int t = OrderType();
+      if (t != OP_BUY && t != OP_SELL) continue;
+      if (!Panel_IsOurMagic(OrderMagicNumber())) continue;
+      int    ticket = OrderTicket();
+      string sym    = OrderSymbol();
+      int    digits = (int)MarketInfo(sym, MODE_DIGITS);
+      double entry  = OrderOpenPrice();
+      double cur    = (t == OP_BUY) ? MarketInfo(sym, MODE_BID)
+                                    : MarketInfo(sym, MODE_ASK);
+      double pnl    = OrderProfit() + OrderSwap() + OrderCommission();
+      double sl     = OrderStopLoss();
+      double tp     = OrderTakeProfit();
+      string side   = (t == OP_BUY) ? "BUY" : "SELL";
+      string strat  = Panel_MagicToStrategy(OrderMagicNumber());
+      if (!first) out += ",";
+      first = false;
+      out += "{"
+           + "\"ticket\":"   + IntegerToString(ticket)
+           + ",\"sym\":\""   + sym + "\""
+           + ",\"side\":\""  + side + "\""
+           + ",\"lots\":"    + DoubleToString(OrderLots(), 2)
+           + ",\"entry\":"   + DoubleToString(entry,  digits)
+           + ",\"current\":" + DoubleToString(cur,    digits)
+           + ",\"pnl\":"     + DoubleToString(pnl,    2)
+           + ",\"sl\":"      + DoubleToString(sl,     digits)
+           + ",\"tp\":"      + DoubleToString(tp,     digits)
+           + ",\"strategy\":\"" + strat + "\""
+           + ",\"magic\":"   + IntegerToString(OrderMagicNumber())
+           + "}";
+   }
+   out += "]";
+   return out;
+}
+
+string Oblivious_PendingTypeName(int t) {
+   if (t == OP_BUYLIMIT)  return "BUYLIMIT";
+   if (t == OP_SELLLIMIT) return "SELLLIMIT";
+   if (t == OP_BUYSTOP)   return "BUYSTOP";
+   if (t == OP_SELLSTOP)  return "SELLSTOP";
+   return "PENDING";
+}
+
+string Oblivious_BuildPendingJson() {
+   string out   = "[";
+   bool   first = true;
+   for (int i = OrdersTotal() - 1; i >= 0; i--) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      int t = OrderType();
+      // OP_BUY=0, OP_SELL=1 are market positions — skip them.
+      if (t < OP_BUYLIMIT || t > OP_SELLSTOP) continue;
+      if (!Panel_IsOurMagic(OrderMagicNumber())) continue;
+      int    ticket = OrderTicket();
+      string sym    = OrderSymbol();
+      int    digits = (int)MarketInfo(sym, MODE_DIGITS);
+      datetime exp  = OrderExpiration();
+      string expStr = (exp > 0) ? TimeToString(exp, TIME_DATE | TIME_MINUTES) : "";
+      if (!first) out += ",";
+      first = false;
+      out += "{"
+           + "\"ticket\":"      + IntegerToString(ticket)
+           + ",\"sym\":\""      + sym + "\""
+           + ",\"type\":"       + IntegerToString(t)
+           + ",\"type_name\":\""+ Oblivious_PendingTypeName(t) + "\""
+           + ",\"lots\":"       + DoubleToString(OrderLots(),       2)
+           + ",\"price\":"      + DoubleToString(OrderOpenPrice(),  digits)
+           + ",\"sl\":"         + DoubleToString(OrderStopLoss(),   digits)
+           + ",\"tp\":"         + DoubleToString(OrderTakeProfit(), digits)
+           + ",\"expiry\":\""   + expStr + "\""
+           + ",\"magic\":"      + IntegerToString(OrderMagicNumber())
+           + "}";
+   }
+   out += "]";
+   return out;
+}
+
 // AIBridge_SendMarketData → ships a JSON context_push on the PUSH
 // socket (port 5557). High-frequency, non-blocking, throttled by
 // ZMQ_PUSH_THROTTLE_MS so we never block the EA tick on transport.
@@ -29508,7 +31093,7 @@ void AIBridge_SendMarketData(string symbol) {
       "\"atr\":%.5f,\"rsi\":%.2f,\"adx\":%.2f,\"trend\":%d,\"spread\":%.1f,"
       "\"news_block\":%s,\"news_impact\":%d,\"strategies\":{\"predicted\":%s,\"breakout\":%s,"
       "\"fvg\":%s,\"grid\":%s,\"reverse\":%s,\"smc\":%s,\"ict\":%s},"
-      "\"tpsl_mode\":\"%s\",\"ts\":%d}",
+      "\"tpsl_mode\":\"%s\",\"ts\":%d",
       symbol, Period(),
       MarketInfo(symbol, MODE_BID), MarketInfo(symbol, MODE_ASK),
                                                 iATR(symbol, 0, 14, 0),
@@ -29522,6 +31107,65 @@ void AIBridge_SendMarketData(string symbol) {
       ICT ? "true" : "false",
       IsTPSL_AI() ? "AI" : "Native",
       (int)TimeCurrent());
+   // Account snapshot — campi consumati dalla UI ACCOUNT MATRIX.
+   double marginUsed = AccountMargin();
+   double marginLvl  = (marginUsed > 0.0) ? (AccountEquity() / marginUsed * 100.0) : 0.0;
+   payload += StringFormat(
+      ",\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,"
+      "\"margin_level\":%.2f,\"leverage\":%d,\"account_id\":%d,"
+      "\"broker\":\"%s\",\"server\":\"%s\",\"currency\":\"%s\"",
+      AccountBalance(), AccountEquity(), marginUsed, AccountFreeMargin(),
+      marginLvl, (int)AccountLeverage(), (int)AccountNumber(),
+      AccountCompany(), AccountServer(), AccountCurrency());
+   // Performance metrics — campi consumati dalla UI PERFORMANCE METRICS.
+   double perf_open  = 0.0;
+   int    perf_oTrades = 0;
+   for (int i = 0; i < OrdersTotal(); i++) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if (OrderType() == OP_BUY || OrderType() == OP_SELL) {
+         perf_open += OrderProfit() + OrderSwap() + OrderCommission();
+         perf_oTrades++;
+      }
+   }
+   double perf_today = 0.0, perf_total = 0.0;
+   int    perf_trades = 0, perf_wins = 0, perf_losses = 0;
+   double perf_grossProfit = 0.0, perf_grossLoss = 0.0;
+   double perf_maxDD = 0.0;
+   datetime todayStart = StrToTime(TimeToStr(TimeCurrent(), TIME_DATE));
+   for (int j = 0; j < OrdersHistoryTotal(); j++) {
+      if (!OrderSelect(j, SELECT_BY_POS, MODE_HISTORY)) continue;
+      if (OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+      double pnl = OrderProfit() + OrderSwap() + OrderCommission();
+      perf_total += pnl;
+      perf_trades++;
+      if (pnl >= 0) { perf_wins++;   perf_grossProfit += pnl; }
+      else          { perf_losses++; perf_grossLoss   += -pnl; }
+      if (OrderCloseTime() >= todayStart) perf_today += pnl;
+      if (pnl < perf_maxDD) perf_maxDD = pnl;
+   }
+   double perf_winrate = (perf_trades > 0) ? (100.0 * perf_wins / perf_trades) : 0.0;
+   double perf_pf      = (perf_grossLoss > 0.0) ? (perf_grossProfit / perf_grossLoss) : 0.0;
+   double bal          = (AccountBalance() > 0.0) ? AccountBalance() : 1.0;
+   double perf_today_pct = (bal > 0.0) ? MathAbs(perf_today / bal) * 100.0 : 0.0;
+   double perf_open_pct  = (bal > 0.0) ? MathAbs(perf_open  / bal) * 100.0 : 0.0;
+   double perf_total_pct = (bal > 0.0) ? MathAbs(perf_total / bal) * 100.0 : 0.0;
+   double perf_maxdd_pct = (bal > 0.0) ? MathAbs(perf_maxDD / bal) * 100.0 : 0.0;
+   payload += StringFormat(
+      ",\"perf_total\":%.2f,\"perf_total_pct\":%.2f,"
+      "\"perf_today\":%.2f,\"perf_today_pct\":%.2f,"
+      "\"perf_open\":%.2f,\"perf_open_pct\":%.2f,"
+      "\"perf_trades\":%d,\"perf_winrate\":%.2f,"
+      "\"perf_max_dd\":%.2f,\"perf_maxdd_pct\":%.2f,"
+      "\"perf_pf\":%.2f",
+      perf_total, MathMin(100.0, perf_total_pct),
+      perf_today, MathMin(100.0, perf_today_pct),
+      perf_open,  MathMin(100.0, perf_open_pct),
+      perf_trades, perf_winrate,
+      perf_maxDD, MathMin(100.0, perf_maxdd_pct),
+      perf_pf);
+   payload += ",\"positions\":" + Oblivious_BuildPositionsJson();
+   payload += ",\"pending\":"   + Oblivious_BuildPendingJson();
+   payload += "}";
    AIBridge_SendRequest(payload);
                                           }
 
@@ -29777,6 +31421,13 @@ bool ZMQ_Init() {
    g_zmq_req.setLinger(ZMQ_LINGER_MS);
    g_zmq_req.setSendTimeout(ZMQ_REQ_TIMEOUT_MS);
    g_zmq_req.setReceiveTimeout(ZMQ_REQ_TIMEOUT_MS);
+   // ZMQ_REQ_RELAXED + ZMQ_REQ_CORRELATE rendono la state machine
+   // REQ tollerante ai timeout: dopo un recv mancato il prossimo
+   // send è permesso (senza queste opzioni REQ si "blocca" per
+   // sempre in stato waiting-for-reply al primo timeout). CORRELATE
+   // marca ogni request con un id interno per scartare reply tardive.
+   g_zmq_req.setRequestRelaxed(true);
+   g_zmq_req.setRequestCorrelated(true);
    if (!g_zmq_req.connect(ZMQ_REQ_ENDPOINT)) {
       Print("[ZMQ] REQ connect failed: ", ZMQ_REQ_ENDPOINT);
       return false;
@@ -29792,6 +31443,7 @@ bool ZMQ_Init() {
    g_zmq_sub.subscribe(ZMQ_TOPIC_COMMAND);
    g_zmq_sub.subscribe(ZMQ_TOPIC_NEWS);
    g_zmq_sub.subscribe(ZMQ_TOPIC_BOOKMAP);
+   g_zmq_sub.subscribe(ZMQ_TOPIC_DECISION);
    g_zmq_push.setLinger(ZMQ_LINGER_MS);
    g_zmq_push.setSendHighWaterMark(10000);
    if (!g_zmq_push.connect(ZMQ_PUSH_ENDPOINT)) {
@@ -29820,20 +31472,36 @@ bool ZMQ_SendRequest(string payload, string &reply) {
    reply = "";
    if (!g_zmq_initialized) return false;
    ZmqMsg out_msg(payload);
+   static int s_dbg_callCnt = 0;
+   static int s_dbg_lastLogErr = 0;
+   s_dbg_callCnt++;
+   if (s_dbg_callCnt == 1)
+      PrintFormat("[DBG] ZMQ_SendRequest FIRST call: payload_size=%d", StringLen(payload));
    if (!g_zmq_req.send(out_msg)) {
       g_ai_errorCount++;
       g_ai_status = "ZMQ_REQ_SEND_FAIL";
+      if (s_dbg_callCnt == 1 || (g_ai_errorCount - s_dbg_lastLogErr) >= 10) {
+         s_dbg_lastLogErr = g_ai_errorCount;
+         PrintFormat("[DBG] ZMQ_SendRequest SEND FAIL (call#%d err#%d)", s_dbg_callCnt, g_ai_errorCount);
+      }
       return false;
    }
    ZmqMsg in_msg;
    if (!g_zmq_req.recv(in_msg)) {
       g_ai_errorCount++;
       g_ai_status = "ZMQ_REQ_TIMEOUT";
+      if (s_dbg_callCnt == 1 || (g_ai_errorCount - s_dbg_lastLogErr) >= 10) {
+         s_dbg_lastLogErr = g_ai_errorCount;
+         PrintFormat("[DBG] ZMQ_SendRequest RECV TIMEOUT (call#%d err#%d) — hub non risponde entro %dms",
+                     s_dbg_callCnt, g_ai_errorCount, ZMQ_REQ_TIMEOUT_MS);
+      }
       return false;
    }
    reply             = in_msg.getData();
    g_ai_lastResponse = TimeCurrent();
    g_ai_successCount++;
+   if (g_ai_successCount == 1 || (g_ai_successCount % 20) == 0)
+      PrintFormat("[DBG] ZMQ_SendRequest OK #%d reply_size=%d", g_ai_successCount, StringLen(reply));
    return true;
 }
 
@@ -29867,6 +31535,7 @@ int ZMQ_DrainSubscriber() {
       else if (StringFind(topic, ZMQ_TOPIC_COMMAND)   == 0) AI_HandleCommand(body);
       else if (StringFind(topic, ZMQ_TOPIC_NEWS)      == 0) AI_HandleNews(body);
       else if (StringFind(topic, ZMQ_TOPIC_BOOKMAP)   == 0) AI_HandleBookmap(body);
+      else if (StringFind(topic, ZMQ_TOPIC_DECISION)  == 0) AI_HandleDecision(body);
       processed++;
    }
    return processed;
@@ -29906,6 +31575,58 @@ void AI_HandleNews(string body) {
    if (StringLen(nextEv) > 0) g_news_nextEvent = nextEv;
    if (untilTs > 0) g_news_nextEventTime = (datetime)untilTs;
    g_news_lastUpdate = TimeCurrent();
+}
+
+// Fast-path orderflow stream on topic `oblivious.decision`. Compact
+// frame: {symbol, of_bias, of_confidence, of_signal}. Updates the
+// g_of_* cache so SOFT helpers reflect the latest orderflow view
+// without waiting for the next heavy `bookmap` snapshot or `ai_query`
+// roundtrip. `of_bias` here is a string ("bullish"/"bearish"/"neutral")
+// that we map to the same [-1.0 .. +1.0] scale used elsewhere.
+void AI_HandleDecision(string body) {
+   string frameSym = Msg_GetField(body, "symbol");
+   if (StringLen(frameSym) > 0 && frameSym != Symbol()) return;
+   string biasStr = Msg_GetField(body, "of_bias");
+   string sig     = Msg_GetField(body, "of_signal");
+   double conf    = Msg_GetDouble(body, "of_confidence", 0.0);
+   double bias    = 0.0;
+   if (biasStr == "bullish" || biasStr == "BULLISH" || biasStr == "bull") bias =  1.0;
+   else if (biasStr == "bearish" || biasStr == "BEARISH" || biasStr == "bear") bias = -1.0;
+   g_of_lastTs     = TimeCurrent();
+   g_of_symbol     = (StringLen(frameSym) > 0 ? frameSym : Symbol());
+   g_of_bias       = bias;
+   g_of_confidence = conf / 100.0;  // normalize 0..1
+   if (StringLen(sig) > 0) g_of_signal = sig;
+   g_of_fresh      = true;
+
+   // FASE 11 - EXE trigger marker: disegna freccia OF sul grafico
+   // OGNI volta che arriva una decisione orderflow esterna. Cosi'
+   // l'utente vede chiaramente che il trigger NON e' nativo mq4 ma
+   // viene dal bridge EXE/Bookmap. Le frecce si auto-puliscono
+   // dopo 200 candele per evitare clutter.
+   if (StringLen(sig) > 0 && sig != "NONE" && bias != 0.0) {
+      string aname = StringFormat("OBL_OF_%d", (int)TimeCurrent());
+      datetime  t  = Time[0];
+      double    px = (bias > 0 ? Bid : Ask);
+      int       code = (bias > 0 ? 233 : 234);   // up/down arrow
+      color     clr  = (bias > 0 ? clrLime : clrTomato);
+      if (ObjectCreate(0, aname, OBJ_ARROW, 0, t, px)) {
+         ObjectSetInteger(0, aname, OBJPROP_ARROWCODE, code);
+         ObjectSetInteger(0, aname, OBJPROP_COLOR, clr);
+         ObjectSetInteger(0, aname, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, aname, OBJPROP_BACK, false);
+         ObjectSetString (0, aname, OBJPROP_TEXT,
+                          StringFormat("OF %s %.0f%%", sig, conf));
+      }
+      // garbage-collect arrow OF piu' vecchi di 200 candele
+      datetime cutoff = Time[0] - 200 * PeriodSeconds();
+      for (int i = ObjectsTotal(0, -1, OBJ_ARROW) - 1; i >= 0; i--) {
+         string nm = ObjectName(0, i, -1, OBJ_ARROW);
+         if (StringFind(nm, "OBL_OF_") != 0) continue;
+         if ((datetime)ObjectGetInteger(0, nm, OBJPROP_TIME) < cutoff)
+            ObjectDelete(0, nm);
+      }
+   }
 }
 
 void AI_HandleBookmap(string body) {
@@ -30031,11 +31752,32 @@ void AI_HandleCommand(string body) {
    string verb = Msg_GetField(body, "decision");
    if (StringLen(verb) == 0) verb = Msg_GetField(body, "op");
 
-   if      (verb == "EXECUTE_ORDER") Cmd_HandleExecute(body);
-   else if (verb == "HOLD")          Cmd_HandleHold(body);
-   else if (verb == "CANCEL")        Cmd_HandleCancel(body);
-   else if (verb == "INVALIDATE")    Cmd_HandleInvalidate(body);
-   else if (verb == "REFINE_TPSL")   Cmd_HandleRefineTPSL(body);
+   // ── R8: full verb table (legacy + explicit + mobile-friendly) ──
+   //   EXECUTE_ORDER  → opens market/limit/stop (HARD GATES + Risk_Preflight)
+   //   HOLD           → per-owner hold ON (envelope `owner`/`strategy_name`,
+   //                    if missing fallback to HOLD_GLOBAL for safety)
+   //   CANCEL         → legacy dispatcher: pending → CANCEL_PENDING,
+   //                    market → CLOSE_POSITION (back-compat path)
+   //   CANCEL_PENDING → cancel ONLY pending tickets (errors on market)
+   //   CLOSE_POSITION → close ONLY market tickets (errors on pending)
+   //   HOLD_GLOBAL    → freeze ALL new openings (no auto-close)
+   //   RESUME_GLOBAL  → lift global hold + every per-owner hold
+   //   INVALIDATE     → mark setup invalid + cancel pending if ticket given
+   //   REFINE_TPSL    → adjust SL/TP{1..max} on a live ticket
+   //   CLOSE_ALL_BY_OWNER          → bulk close (market) per owner
+   //   CANCEL_ALL_PENDING_BY_OWNER → bulk cancel pendings per owner
+   if      (verb == "EXECUTE_ORDER")               Cmd_HandleExecute(body);
+   else if (verb == "HOLD")                        Cmd_HandleHold(body);
+   else if (verb == "HOLD_GLOBAL")                 Cmd_HandleHoldGlobal(body);
+   else if (verb == "RESUME_GLOBAL" ||
+            verb == "RESUME")                      Cmd_HandleResumeGlobal(body);
+   else if (verb == "CANCEL")                      Cmd_HandleCancel(body);
+   else if (verb == "CANCEL_PENDING")              Cmd_HandleCancelPending(body);
+   else if (verb == "CLOSE_POSITION")              Cmd_HandleClosePosition(body);
+   else if (verb == "CLOSE_ALL_BY_OWNER")          Cmd_HandleCloseAllByOwner(body);
+   else if (verb == "CANCEL_ALL_PENDING_BY_OWNER") Cmd_HandleCancelAllPendingByOwner(body);
+   else if (verb == "INVALIDATE")                  Cmd_HandleInvalidate(body);
+   else if (verb == "REFINE_TPSL")                 Cmd_HandleRefineTPSL(body);
    else PrintFormat("[Hub Cmd] unknown decision=%s body=%s", verb, body);
 }
 
@@ -30099,7 +31841,12 @@ void Cmd_HandleExecute(string body) {
    // spread, daily-DD, margin. The hub CAN suggest entries; it
    // CANNOT bypass these checks.
    string hg_reason = "";
-   if (IsMaxTotalDDExceeded())                  hg_reason = "max_total_dd";
+   // R8: hold layers are evaluated FIRST so an operator can
+   // freeze the EA without waiting for a news/DD gate to align.
+   if      (Hub_HoldGlobal_IsActive())          hg_reason = "hold_global";
+   else if (StringLen(owner) > 0 &&
+            Hub_HoldOwner_IsActive(owner))      hg_reason = "hold_owner";
+   else if (IsMaxTotalDDExceeded())             hg_reason = "max_total_dd";
    else if (DailyStopOpenGate())                hg_reason = "daily_stop";
    else if (!IsMarginLevelSufficient(50))       hg_reason = "low_margin";
    else if (!IsSessionValid())                  hg_reason = "session_closed";
@@ -30162,64 +31909,536 @@ void Cmd_HandleExecute(string body) {
    }
 }
 
+// ============================================================
+// R8 — Cmd_HandleHold
+//
+// Hub-driven HOLD. Two modes:
+//   * envelope has `owner` (or `strategy_name`): activate the
+//     per-owner hold ONLY. The named owner-strategy stops opening
+//     new entries; every other owner keeps trading.
+//   * envelope has no owner: degrade to HOLD_GLOBAL as a safety
+//     fallback. The reason is logged so the operator can audit.
+//
+// Idempotent — re-issuing HOLD on an already-held owner refreshes
+// reason/timestamp. Never closes anything that is already open.
+// ============================================================
 void Cmd_HandleHold(string body) {
-   string owner = Msg_GetField(body, "owner");
-   string reason = Msg_GetField(body, "reason");
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   string owner   = Cmd_PField (body, scope, "owner");
+   if (StringLen(owner) == 0) owner = Cmd_PField(body, scope, "strategy_name");
+   string reason  = Cmd_PField (body, scope, "reason");
+   if (StringLen(reason) == 0) reason = "hub_request";
+
+   if (StringLen(owner) == 0) {
+      Hub_HoldGlobal_Set(true, reason);
+      PrintFormat("[Hub Cmd] HOLD (no owner → HOLD_GLOBAL) reason=%s", reason);
+      return;
+   }
+   Hub_HoldOwner_Set(owner, true, reason);
    PrintFormat("[Hub Cmd] HOLD owner=%s reason=%s", owner, reason);
 }
 
+// ============================================================
+// R8 — Cmd_HandleCancel  (legacy dispatcher kept for back-compat)
+//
+// Older publishers issue a single `CANCEL` verb for both pending
+// and market tickets. We keep that behaviour but route INTERNALLY
+// to the explicit handlers so the actual close/cancel path is one
+// and the same regardless of how it was triggered.
+//
+// If `ticket` is missing/0, the dispatch falls back to:
+//   - `CANCEL_ALL_PENDING_BY_OWNER` when `owner` is present
+//   - drop otherwise (we never close blindly)
+// ============================================================
 void Cmd_HandleCancel(string body) {
-   int ticket = Msg_GetInt(body, "ticket", 0);
-   string owner = Msg_GetField(body, "owner");
-   if (ticket <= 0) return;
-   if (StringLen(owner) > 0 && Ownership_GetOwner(ticket) != owner) {
-      PrintFormat("[Hub Cmd] CANCEL owner mismatch ticket=%d expected=%s actual=%s",
-                  ticket, owner, Ownership_GetOwner(ticket));
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   int    ticket  = Cmd_PInt   (body, scope, "ticket", 0);
+   string owner   = Cmd_PField (body, scope, "owner");
+   if (StringLen(owner) == 0) owner = Cmd_PField(body, scope, "strategy_name");
+
+   if (ticket <= 0) {
+      if (StringLen(owner) > 0) {
+         Cmd_HandleCancelAllPendingByOwner(body);
+         return;
+      }
+      Print("[Hub Cmd] CANCEL dropped: missing ticket AND owner");
       return;
    }
-   if (!OrderSelect(ticket, SELECT_BY_TICKET)) return;
+   if (!OrderSelect(ticket, SELECT_BY_TICKET)) {
+      PrintFormat("[Hub Cmd] CANCEL ticket=%d not found", ticket);
+      return;
+   }
    int otype = OrderType();
    if (otype == OP_BUYLIMIT || otype == OP_SELLLIMIT ||
        otype == OP_BUYSTOP  || otype == OP_SELLSTOP) {
-      bool ok = OrderDelete(ticket);
-      PrintFormat("[Hub Cmd] CANCEL pending ticket=%d ok=%s", ticket, ok ? "Y" : "N");
+      Cmd_HandleCancelPending(body);
+   } else if (otype == OP_BUY || otype == OP_SELL) {
+      Cmd_HandleClosePosition(body);
    } else {
-      double price = (otype == OP_BUY) ? MarketInfo(OrderSymbol(), MODE_BID)
-                                       : MarketInfo(OrderSymbol(), MODE_ASK);
-      bool ok = OrderClose(ticket, OrderLots(), price, 10, clrNONE);
-      PrintFormat("[Hub Cmd] CANCEL market ticket=%d ok=%s", ticket, ok ? "Y" : "N");
+      PrintFormat("[Hub Cmd] CANCEL ticket=%d unknown order type=%d", ticket, otype);
    }
-   Ownership_Remove(ticket);
 }
 
+// ============================================================
+// R8 — Cmd_HandleInvalidate
+//
+// Mark a setup as invalidated. If a ticket is provided AND it is
+// a pending order, we cancel it (the setup is gone). If it is a
+// live market position we DO NOT auto-close — invalidation of a
+// running trade is the operator's call via CLOSE_POSITION, not
+// an automatic side-effect.
+//
+// Symbol / owner / dedup guards are inherited from AI_HandleCommand;
+// here we add a final ownership-mismatch guard so a hub bug can't
+// invalidate someone else's setup.
+// ============================================================
 void Cmd_HandleInvalidate(string body) {
-   int ticket = Msg_GetInt(body, "ticket", 0);
-   string owner = Msg_GetField(body, "owner");
-   string reason = Msg_GetField(body, "reason");
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   int    ticket  = Cmd_PInt   (body, scope, "ticket", 0);
+   string owner   = Cmd_PField (body, scope, "owner");
+   if (StringLen(owner) == 0) owner = Cmd_PField(body, scope, "strategy_name");
+   string reason  = Cmd_PField (body, scope, "reason");
+
    PrintFormat("[Hub Cmd] INVALIDATE ticket=%d owner=%s reason=%s",
                ticket, owner, reason);
-   if (ticket > 0) {
-      Cmd_HandleCancel(body);
+   if (ticket <= 0) return;
+   if (!OrderSelect(ticket, SELECT_BY_TICKET)) {
+      PrintFormat("[Hub Cmd] INVALIDATE ticket=%d not found", ticket);
+      return;
+   }
+   if (StringLen(owner) > 0) {
+      string registered = Ownership_GetOwner(ticket);
+      if (StringLen(registered) > 0 && registered != owner) {
+         PrintFormat("[Hub Cmd] INVALIDATE owner mismatch ticket=%d expected=%s actual=%s",
+                     ticket, owner, registered);
+         return;
+      }
+   }
+   int otype = OrderType();
+   if (otype == OP_BUYLIMIT || otype == OP_SELLLIMIT ||
+       otype == OP_BUYSTOP  || otype == OP_SELLSTOP) {
+      // setup pending → cancel
+      Cmd_HandleCancelPending(body);
+   } else {
+      // live ticket: just log invalidation; operator must CLOSE_POSITION
+      // explicitly. Refusing to auto-close protects against hub bugs that
+      // could otherwise flatten a profitable trade.
+      PrintFormat("[Hub Cmd] INVALIDATE on live ticket=%d → operator must close explicitly", ticket);
    }
 }
 
+// ============================================================
+// R8 — Cmd_HandleRefineTPSL
+//
+// Payload-aware refinement of SL / TP1..TPMAX on a live ticket.
+// Accepts both envelope-flat (legacy) and nested `payload` (new).
+//
+// Only `sl` and `tp1` are applied to the broker (OrderModify takes
+// a single SL + single TP). The richer ladder fields (tp2/tp3/tpmax)
+// are reserved for the local TPSLEngine: we log them so the operator
+// has full transparency, but we do not push them to the broker — the
+// TP ladder is owned by the EA's TPSLManager, not by the hub.
+// ============================================================
 void Cmd_HandleRefineTPSL(string body) {
-   int    ticket = Msg_GetInt(body, "ticket", 0);
-   string owner  = Msg_GetField(body, "owner");
-   double sl     = Msg_GetDouble(body, "sl", 0.0);
-   double tp1    = Msg_GetDouble(body, "tp1", 0.0);
-   if (ticket <= 0) return;
-   if (StringLen(owner) > 0 && Ownership_GetOwner(ticket) != owner) {
-      PrintFormat("[Hub Cmd] REFINE_TPSL owner mismatch ticket=%d", ticket);
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   int    ticket  = Cmd_PInt   (body, scope, "ticket", 0);
+   string owner   = Cmd_PField (body, scope, "owner");
+   if (StringLen(owner) == 0) owner = Cmd_PField(body, scope, "strategy_name");
+   double sl      = Cmd_PDouble(body, scope, "sl",    0.0);
+   double tp1     = Cmd_PDouble(body, scope, "tp1",   0.0);
+   if (tp1 <= 0.0) tp1 = Cmd_PDouble(body, scope, "tp", 0.0);  // alias
+   double tp2     = Cmd_PDouble(body, scope, "tp2",   0.0);
+   double tp3     = Cmd_PDouble(body, scope, "tp3",   0.0);
+   double tpMax   = Cmd_PDouble(body, scope, "tpmax", 0.0);
+   if (tpMax <= 0.0) tpMax = Cmd_PDouble(body, scope, "tp_max", 0.0);
+
+   if (ticket <= 0) {
+      Print("[Hub Cmd] REFINE_TPSL dropped: missing ticket");
       return;
    }
-   if (!OrderSelect(ticket, SELECT_BY_TICKET)) return;
+   if (!OrderSelect(ticket, SELECT_BY_TICKET)) {
+      PrintFormat("[Hub Cmd] REFINE_TPSL ticket=%d not found", ticket);
+      return;
+   }
+   // Owner-mismatch guard: only block when the ticket IS registered
+   // in the ownership table AND the registered owner ≠ envelope owner.
+   // A ticket missing from the registry (native trade) is allowed
+   // through — operator can refine non-hub tickets too.
+   if (StringLen(owner) > 0) {
+      string registered = Ownership_GetOwner(ticket);
+      if (StringLen(registered) > 0 && registered != owner) {
+         PrintFormat("[Hub Cmd] REFINE_TPSL owner mismatch ticket=%d expected=%s actual=%s",
+                     ticket, owner, registered);
+         return;
+      }
+   }
    double useSL = (sl  > 0.0) ? sl  : OrderStopLoss();
    double useTP = (tp1 > 0.0) ? tp1 : OrderTakeProfit();
    bool ok = OrderModify(ticket, OrderOpenPrice(), useSL, useTP, 0, clrNONE);
-   PrintFormat("[Hub Cmd] REFINE_TPSL ticket=%d sl=%.5f tp=%.5f ok=%s",
-               ticket, useSL, useTP, ok ? "Y" : "N");
-                                          }
+   PrintFormat("[Hub Cmd] REFINE_TPSL ticket=%d sl=%.5f tp1=%.5f tp2=%.5f tp3=%.5f tpmax=%.5f ok=%s err=%d",
+               ticket, useSL, useTP, tp2, tp3, tpMax,
+               ok ? "Y" : "N", ok ? 0 : GetLastError());
+}
+
+// ============================================================
+// R8 — Payload-aware field helpers.
+//
+// Convention: every modern hub command may wrap its data inside
+// a `payload` object. Envelope-level fields (symbol, command_id,
+// correlation_id, expiry_ts, strategy_name) stay at the top; data
+// fields (ticket, lot, sl, tp, ...) live inside `payload`.
+//
+// These helpers read from `scope` first (payload when present,
+// envelope otherwise) and fall back to the envelope body so legacy
+// flat publishers keep working without changes.
+// ============================================================
+string Cmd_PField(string body, string scope, string key) {
+   string v = Msg_GetField(scope, key);
+   if (StringLen(v) > 0) return v;
+   if (scope != body)    return Msg_GetField(body, key);
+   return "";
+}
+double Cmd_PDouble(string body, string scope, string key, double def) {
+   double v = Msg_GetDouble(scope, key, def);
+   if (v != def)         return v;
+   if (scope != body)    return Msg_GetDouble(body, key, def);
+   return def;
+}
+int Cmd_PInt(string body, string scope, string key, int def) {
+   int v = Msg_GetInt(scope, key, def);
+   if (v != def)         return v;
+   if (scope != body)    return Msg_GetInt(body, key, def);
+   return def;
+}
+
+// ============================================================
+// R8 — Hub_Hold* state API
+// ============================================================
+bool Hub_HoldGlobal_IsActive() { return g_hold_global; }
+
+void Hub_HoldGlobal_Set(bool on, string reason) {
+   if (on == g_hold_global) {
+      // idempotent: refresh reason/since only if reason supplied
+      if (on && StringLen(reason) > 0) {
+         g_hold_global_reason = reason;
+         g_hold_global_since  = TimeCurrent();
+      }
+      return;
+   }
+   g_hold_global        = on;
+   g_hold_global_since  = TimeCurrent();
+   g_hold_global_reason = on ? reason : "";
+}
+
+int Hub_HoldOwner_Find(string owner) {
+   for (int i = 0; i < g_hold_owner_count; i++) {
+      if (g_hold_owner[i].owner == owner) return i;
+   }
+   return -1;
+}
+
+bool Hub_HoldOwner_IsActive(string owner) {
+   if (StringLen(owner) == 0) return false;
+   int idx = Hub_HoldOwner_Find(owner);
+   if (idx < 0) return false;
+   return g_hold_owner[idx].active;
+}
+
+void Hub_HoldOwner_Set(string owner, bool on, string reason) {
+   if (StringLen(owner) == 0) return;
+   int idx = Hub_HoldOwner_Find(owner);
+   if (idx < 0) {
+      if (!on) return;  // nothing to clear
+      if (g_hold_owner_count >= HOLD_OWNER_MAX) {
+         PrintFormat("[Hub Cmd] HOLD owner slot table full (max=%d) — dropping %s",
+                     HOLD_OWNER_MAX, owner);
+         return;
+      }
+      idx = g_hold_owner_count++;
+      g_hold_owner[idx].owner = owner;
+   }
+   if (g_hold_owner[idx].active == on) {
+      if (on && StringLen(reason) > 0) {
+         g_hold_owner[idx].reason = reason;
+         g_hold_owner[idx].since  = TimeCurrent();
+      }
+      return;
+   }
+   g_hold_owner[idx].active = on;
+   g_hold_owner[idx].since  = TimeCurrent();
+   g_hold_owner[idx].reason = on ? reason : "";
+}
+
+// ============================================================
+// R8 — Cmd_HandleHoldGlobal / Cmd_HandleResumeGlobal
+//
+// HOLD_GLOBAL freezes ALL new openings (hub-driven AND owner-
+// strategies, because NewsPolicy_CanOpen — the central per-strategy
+// entry gate — now consults Hub_HoldGlobal_IsActive()).
+//
+// RESUME_GLOBAL releases the global hold AND every per-owner hold.
+// Operator can re-issue per-owner HOLDs afterwards if needed.
+// Neither verb ever touches open trades.
+// ============================================================
+void Cmd_HandleHoldGlobal(string body) {
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   string reason  = Cmd_PField(body, scope, "reason");
+   if (StringLen(reason) == 0) reason = "mobile_operator";
+   Hub_HoldGlobal_Set(true, reason);
+   PrintFormat("[Hub Cmd] HOLD_GLOBAL enabled reason=%s", reason);
+}
+
+void Cmd_HandleResumeGlobal(string body) {
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   string reason  = Cmd_PField(body, scope, "reason");
+   Hub_HoldGlobal_Set(false, "");
+   // Lift every per-owner hold too, so the system fully resumes.
+   for (int i = 0; i < g_hold_owner_count; i++) {
+      g_hold_owner[i].active = false;
+      g_hold_owner[i].since  = TimeCurrent();
+      g_hold_owner[i].reason = "";
+   }
+   PrintFormat("[Hub Cmd] RESUME_GLOBAL enabled reason=%s",
+               StringLen(reason) > 0 ? reason : "(none)");
+}
+
+// ============================================================
+// R8 — Cmd_HandleClosePosition
+//
+// Close exactly ONE market position. Refuses pending tickets so
+// the operator cannot mistakenly use the wrong verb.
+//
+// Guards (in order):
+//   - ticket present and > 0
+//   - OrderSelect succeeds
+//   - order type is OP_BUY or OP_SELL (refuse pendings)
+//   - symbol match: if envelope supplies `symbol`, must equal
+//     the broker's OrderSymbol() of the ticket
+//   - owner match: if supplied, must match Ownership_GetOwner()
+//
+// On success: OrderClose + Ownership_Remove + cleared OCO peer
+// (best-effort: peer cancel is fire-and-forget so a missing peer
+// never blocks our own close).
+// ============================================================
+void Cmd_HandleClosePosition(string body) {
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   int    ticket  = Cmd_PInt   (body, scope, "ticket", 0);
+   string owner   = Cmd_PField (body, scope, "owner");
+   if (StringLen(owner) == 0) owner = Cmd_PField(body, scope, "strategy_name");
+   string envSym  = Cmd_PField (body, scope, "symbol");
+   if (StringLen(envSym) == 0) envSym = Cmd_PField(body, scope, "sym");
+
+   if (ticket <= 0) {
+      Print("[Hub Cmd] CLOSE_POSITION dropped: missing ticket");
+      return;
+   }
+   if (!OrderSelect(ticket, SELECT_BY_TICKET)) {
+      PrintFormat("[Hub Cmd] CLOSE_POSITION ticket=%d not found", ticket);
+      return;
+   }
+   int otype = OrderType();
+   if (otype != OP_BUY && otype != OP_SELL) {
+      PrintFormat("[Hub Cmd] CLOSE_POSITION ticket=%d not a market position (type=%d) — use CANCEL_PENDING",
+                  ticket, otype);
+      return;
+   }
+   if (StringLen(envSym) > 0 && OrderSymbol() != envSym) {
+      PrintFormat("[Hub Cmd] CLOSE_POSITION ticket=%d symbol mismatch broker=%s envelope=%s",
+                  ticket, OrderSymbol(), envSym);
+      return;
+   }
+   if (StringLen(owner) > 0) {
+      string registered = Ownership_GetOwner(ticket);
+      if (StringLen(registered) > 0 && registered != owner) {
+         PrintFormat("[Hub Cmd] CLOSE_POSITION owner mismatch ticket=%d expected=%s actual=%s",
+                     ticket, owner, registered);
+         return;
+      }
+   }
+   double price = (otype == OP_BUY) ? MarketInfo(OrderSymbol(), MODE_BID)
+                                    : MarketInfo(OrderSymbol(), MODE_ASK);
+   double lots  = OrderLots();
+   bool ok = OrderClose(ticket, lots, price, 10, clrNONE);
+   if (ok) {
+      // Best-effort OCO peer cleanup (Predicted limit/stop pairs).
+      int peer = 0;
+      int regIdx = Ownership_FindByTicket(ticket);
+      if (regIdx >= 0) peer = g_orderOwnership[regIdx].ocoPeerTicket;
+      Ownership_Remove(ticket);
+      if (peer > 0 && OrderSelect(peer, SELECT_BY_TICKET)) {
+         int peerType = OrderType();
+         if (peerType > OP_SELL) {
+            // Best-effort OCO peer delete — failures are non-fatal
+            // (the main ticket is already closed; broker will clean
+            // up the pending eventually if our delete races a fill).
+            if (!OrderDelete(peer)) {
+               PrintFormat("[Hub Cmd] CLOSE_POSITION OCO peer=%d delete err=%d (non-fatal)",
+                           peer, GetLastError());
+            }
+            Ownership_Remove(peer);
+         }
+      }
+   }
+   PrintFormat("[Hub Cmd] CLOSE_POSITION ticket=%d owner=%s lots=%.2f ok=%s err=%d",
+               ticket, owner, lots, ok ? "Y" : "N", ok ? 0 : GetLastError());
+}
+
+// ============================================================
+// R8 — Cmd_HandleCancelPending
+//
+// Cancel exactly ONE pending order. Refuses market tickets so
+// the operator cannot accidentally close a live trade.
+//
+// Same guards as CLOSE_POSITION (ticket/select/symbol/owner) but
+// the type check is inverted (must be one of the 4 pending types).
+// ============================================================
+void Cmd_HandleCancelPending(string body) {
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   int    ticket  = Cmd_PInt   (body, scope, "ticket", 0);
+   string owner   = Cmd_PField (body, scope, "owner");
+   if (StringLen(owner) == 0) owner = Cmd_PField(body, scope, "strategy_name");
+   string envSym  = Cmd_PField (body, scope, "symbol");
+   if (StringLen(envSym) == 0) envSym = Cmd_PField(body, scope, "sym");
+
+   if (ticket <= 0) {
+      Print("[Hub Cmd] CANCEL_PENDING dropped: missing ticket");
+      return;
+   }
+   if (!OrderSelect(ticket, SELECT_BY_TICKET)) {
+      PrintFormat("[Hub Cmd] CANCEL_PENDING ticket=%d not found", ticket);
+      return;
+   }
+   int otype = OrderType();
+   bool isPending = (otype == OP_BUYLIMIT || otype == OP_SELLLIMIT ||
+                     otype == OP_BUYSTOP  || otype == OP_SELLSTOP);
+   if (!isPending) {
+      PrintFormat("[Hub Cmd] CANCEL_PENDING ticket=%d not a pending (type=%d) — use CLOSE_POSITION",
+                  ticket, otype);
+      return;
+   }
+   if (StringLen(envSym) > 0 && OrderSymbol() != envSym) {
+      PrintFormat("[Hub Cmd] CANCEL_PENDING ticket=%d symbol mismatch broker=%s envelope=%s",
+                  ticket, OrderSymbol(), envSym);
+      return;
+   }
+   if (StringLen(owner) > 0) {
+      string registered = Ownership_GetOwner(ticket);
+      if (StringLen(registered) > 0 && registered != owner) {
+         PrintFormat("[Hub Cmd] CANCEL_PENDING owner mismatch ticket=%d expected=%s actual=%s",
+                     ticket, owner, registered);
+         return;
+      }
+   }
+   bool ok = OrderDelete(ticket);
+   if (ok) Ownership_Remove(ticket);
+   PrintFormat("[Hub Cmd] CANCEL_PENDING ticket=%d owner=%s ok=%s err=%d",
+               ticket, owner, ok ? "Y" : "N", ok ? 0 : GetLastError());
+}
+
+// ============================================================
+// R8 — Cmd_HandleCloseAllByOwner
+//
+// Bulk close every market position whose ownership registry
+// matches `owner`. Iterates the live order book to also catch
+// market positions opened natively (registry-source != hub) when
+// the operator explicitly targets that owner from the mobile UI.
+//
+// Skips pending orders (use CANCEL_ALL_PENDING_BY_OWNER for those).
+// ============================================================
+void Cmd_HandleCloseAllByOwner(string body) {
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   string owner   = Cmd_PField(body, scope, "owner");
+   if (StringLen(owner) == 0) owner = Cmd_PField(body, scope, "strategy_name");
+   if (StringLen(owner) == 0) {
+      Print("[Hub Cmd] CLOSE_ALL_BY_OWNER dropped: missing owner");
+      return;
+   }
+   int targetMagic = Strategy_NameToMagic(owner);
+   int closed = 0, failed = 0;
+   for (int i = OrdersTotal() - 1; i >= 0; i--) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      int otype = OrderType();
+      if (otype != OP_BUY && otype != OP_SELL) continue;
+      // Snapshot every field we need BEFORE OrderClose — MQL4 may
+      // invalidate the order context once the close succeeds.
+      int    tk      = OrderTicket();
+      string osym    = OrderSymbol();
+      double olots   = OrderLots();
+      int    omagic  = OrderMagicNumber();
+      // ownership precedence: registry first, magic fallback
+      string regOwner = Ownership_GetOwner(tk);
+      bool match = (StringLen(regOwner) > 0)
+                     ? (regOwner == owner)
+                     : (omagic == targetMagic);
+      if (!match) continue;
+      double price = (otype == OP_BUY) ? MarketInfo(osym, MODE_BID)
+                                       : MarketInfo(osym, MODE_ASK);
+      if (OrderClose(tk, olots, price, 10, clrNONE)) {
+         Ownership_Remove(tk);
+         closed++;
+      } else {
+         PrintFormat("[Hub Cmd] CLOSE_ALL_BY_OWNER ticket=%d err=%d",
+                     tk, GetLastError());
+         failed++;
+      }
+   }
+   PrintFormat("[Hub Cmd] CLOSE_ALL_BY_OWNER owner=%s closed=%d failed=%d",
+               owner, closed, failed);
+}
+
+// ============================================================
+// R8 — Cmd_HandleCancelAllPendingByOwner
+//
+// Bulk delete every pending whose ownership registry matches
+// `owner` (or whose magic equals the per-strategy magic, when
+// the registry doesn't track that ticket).
+// ============================================================
+void Cmd_HandleCancelAllPendingByOwner(string body) {
+   string payload = Msg_GetObject(body, "payload");
+   string scope   = (StringLen(payload) > 4 ? payload : body);
+   string owner   = Cmd_PField(body, scope, "owner");
+   if (StringLen(owner) == 0) owner = Cmd_PField(body, scope, "strategy_name");
+   if (StringLen(owner) == 0) {
+      Print("[Hub Cmd] CANCEL_ALL_PENDING_BY_OWNER dropped: missing owner");
+      return;
+   }
+   int targetMagic = Strategy_NameToMagic(owner);
+   int cancelled = 0, failed = 0;
+   for (int i = OrdersTotal() - 1; i >= 0; i--) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      int otype = OrderType();
+      bool isPending = (otype == OP_BUYLIMIT || otype == OP_SELLLIMIT ||
+                        otype == OP_BUYSTOP  || otype == OP_SELLSTOP);
+      if (!isPending) continue;
+      // Snapshot before OrderDelete invalidates the context.
+      int    tk     = OrderTicket();
+      int    omagic = OrderMagicNumber();
+      string regOwner = Ownership_GetOwner(tk);
+      bool match = (StringLen(regOwner) > 0)
+                     ? (regOwner == owner)
+                     : (omagic == targetMagic);
+      if (!match) continue;
+      if (OrderDelete(tk)) {
+         Ownership_Remove(tk);
+         cancelled++;
+      } else {
+         PrintFormat("[Hub Cmd] CANCEL_ALL_PENDING_BY_OWNER ticket=%d err=%d",
+                     tk, GetLastError());
+         failed++;
+      }
+   }
+   PrintFormat("[Hub Cmd] CANCEL_ALL_PENDING_BY_OWNER owner=%s cancelled=%d failed=%d",
+               owner, cancelled, failed);
+}
 
                                           bool AIBridge_HasFreshSignal() {
                                             if (!g_ai_enabled ||
@@ -30269,13 +32488,21 @@ void Cmd_HandleRefineTPSL(string body) {
                                             if (!g_ai_enabled)
                                               return;
 
-                                            // Send market data every N bars
+                                            // Send market data: ogni 3s
+                                            // (UI ACCOUNT MATRIX / PERFORMANCE
+                                            // METRICS si aggiornano live)
+                                            // + sempre alla nuova candela.
                                             static datetime lastSendBar = 0;
+                                            static uint     lastSendMs  = 0;
                                             datetime curBar =
                                                 iTime(symbol, 0, 0);
-                                            if (curBar != lastSendBar) {
+                                            uint     nowMs  = GetTickCount();
+                                            bool newBar  = (curBar != lastSendBar);
+                                            bool dueTime = (nowMs - lastSendMs) >= 3000;
+                                            if (newBar || dueTime) {
                                               AIBridge_SendMarketData(symbol);
                                               lastSendBar = curBar;
+                                              lastSendMs  = nowMs;
                                             }
                                           }
 
@@ -30729,6 +32956,11 @@ bool AIQ_IsFresh() {
 //   • When both are stale, helpers act as no-ops and the strategy
 //     keeps its native value.
 double OF_RefineConfidence(double base_conf, string strat) {
+   // R8 guard: Predicted MUST stay on the hub-driven path
+   // (command bus + Bridge_QueryAI). Soft helpers are reserved
+   // for the 6 owner-strategies. The legacy "Predicted" branch
+   // further below is kept as documented dead code only.
+   if (strat == "Predicted") return base_conf;
    double out = base_conf;
    bool   ofFresh  = OF_IsFresh();
    bool   aiqFresh = AIQ_IsFresh();
@@ -30775,6 +33007,8 @@ double OF_RefineConfidence(double base_conf, string strat) {
 }
 
 int OF_RefineBias(int base_bias, string strat) {
+   // R8 guard: Predicted is hub-driven only — never soft-refined.
+   if (strat == "Predicted") return base_bias;
    bool ofFresh  = OF_IsFresh();
    bool aiqFresh = AIQ_IsFresh();
    if (!ofFresh && !aiqFresh) return base_bias;
@@ -30822,19 +33056,38 @@ int OF_RefineBias(int base_bias, string strat) {
 }
 
 bool OF_ShouldDiscourage(string strat) {
-   // SOFT hint only. Hard gates (spread, news, license, lot, schedule,
-   // invalidation) are evaluated elsewhere and remain untouched.
-   //
-   // Precedence: ai_query thresholds first (authoritative), then
-   // the live orderflow stream as a secondary tripwire.
+   // FASE 2B - support engine, NON hard blocker default:
+   // ritorna true SOLO per:
+   //   - cancel_signal molto estremo (>= 0.90) confermato
+   //   - news high_impact block ufficiale (gia' un hard gate)
+   // Le altre soglie producono SOLO un log soft: la
+   // qualita' viene downgrade da OF_RefineConfidence e
+   // filtrata a valle da Mode_QualityFloor.
+   if (strat == "Predicted") return false;
    if (AIQ_IsFresh()) {
-      if (g_aiq_cancel_signal       >= 0.80) return true;
+      if (g_aiq_cancel_signal       >= 0.90) return true;
       if (g_aiq_news_block_state == "high_impact_block" &&
           strat != "Predicted")               return true;
+      if (g_aiq_cancel_signal >= 0.80) {
+         static datetime __of_lastLog1 = 0;
+         if (TimeCurrent() - __of_lastLog1 > 30) {
+            __of_lastLog1 = TimeCurrent();
+            PrintFormat("[OF/AIQ] %s soft-penalty (cancel=%.2f) - quality downgrade only",
+                        strat, g_aiq_cancel_signal);
+         }
+      }
    }
    if (OF_IsFresh()) {
-      if (g_of_execution_danger >= 0.80) return true;
-      if (g_of_cancel_signal    >= 0.75) return true;
+      if (g_of_execution_danger >= 0.90) return true;
+      if (g_of_cancel_signal    >= 0.90) return true;
+      if (g_of_execution_danger >= 0.75 || g_of_cancel_signal >= 0.75) {
+         static datetime __of_lastLog2 = 0;
+         if (TimeCurrent() - __of_lastLog2 > 30) {
+            __of_lastLog2 = TimeCurrent();
+            PrintFormat("[OF] %s soft-penalty (danger=%.2f cancel=%.2f) - quality downgrade only",
+                        strat, g_of_execution_danger, g_of_cancel_signal);
+         }
+      }
    }
    return false;
 }
@@ -32121,7 +34374,7 @@ color GetStateColor(bool state) {
                       }
 
                                           string ClassifyMarketState() {
-                                            return ClassifyMarket();
+                                            return IntegerToString(ClassifyMarket());
                                           }
 
                                           void Strategy_Grid_RestoreState(
@@ -32400,9 +34653,15 @@ void DrawRect(string name, int x, int y, int w, int h, color bgClr, int corner)
 
 void Dashboard_OnChartEvent(int id, long lparam, double dparam, string sparam)
 {
-      // Handle chart click events on dashboard UI elements
-      if (id != CHARTEVENT_OBJECT_CLICK)
-        return;
+      // Legacy v1 dashboard click handler. The v1 dashboard is no longer
+      // created by the canonical OnInit path (Orchestrator_OnInit) — the
+      // three operative panels (Dynamic / Trigger / Smart) handle every
+      // user interaction now. We keep this handler compiled so historic
+      // hot-reloads of the .ex4 with leftover TB_* objects on the chart
+      // don't crash, but we gate the body behind an object presence check
+      // so we don't waste cycles on every chart event.
+      if (id != CHARTEVENT_OBJECT_CLICK) return;
+      if (ObjectFind(0, "TB_0") < 0) return;   // legacy dashboard absent
       // Check if a top-bar strategy label was clicked
       for (int i = 0; i < 12; i++) {
         string tbName = "TB_" + IntegerToString(i);
@@ -32596,6 +34855,31 @@ void Panel_MakeRect(string name, int corner, int x, int y, int w, int h, color b
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }
 
+// Panel_MakeButton — solid, clickable OBJ_BUTTON. Click events surface
+// as CHARTEVENT_OBJECT_CLICK with sparam == `name`.
+//   `pressed` reflects the visual toggle state (drawn pressed-in when
+//   true, raised when false).
+void Panel_MakeButton(string name, int corner, int x, int y, int w, int h,
+                      string text, color txtClr, color bgClr,
+                      int fontSize=8, bool pressed=false) {
+   if (ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, corner);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetString (0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, txtClr);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bgClr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, txtClr);
+   ObjectSetString (0, name, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetInteger(0, name, OBJPROP_STATE, pressed);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
 // --- P/L CALCULATION FROM HISTORY ---
 void PnL_CalcFromHistory() {
    datetime now  = TimeCurrent();
@@ -32647,100 +34931,146 @@ void DynPanel_Init() {
 
 void DynPanel_Update() {
    if (!DynamicPanel) return;
-   int x = 12;
-   int y = 10;
-   int dy = 16;
 
-   // Row 1: Account + Server
-   Panel_MakeLabel("DYN_R1", CORNER_LEFT_UPPER, x, y,
-      AccountName() + " | " + AccountServer(), clrWhite, 9);
-   y += dy;
+   // ── LAYOUT CONSTANTS ───────────────────────────────────────────────
+   // Anchor in the top-left corner. The container is sized so it always
+   // fits the longest row + the strategy confidence bars below.
+   const int OX     = 8;           // outer X (chart corner padding)
+   const int OY     = 24;          // outer Y (clear of MT4 OHLC bar)
+   const int W      = 240;         // container width
+   const int PADX   = 10;
+   const int PADY   = 8;
+   const int DY     = 15;          // row height
+   const int BAR_X  = 92;          // confidence bar X (relative to OX)
+   const int BAR_W  = 110;
+   const int BAR_H  = 8;
 
-   // Row 2: Balance / Equity / Free Margin
+   // ── COLORS ─────────────────────────────────────────────────────────
+   // Distinct semantic colors so the panel is readable even when the
+   // master rainbow hue rotates. Positive PnL / connected = green,
+   // negative = red, neutral info = soft cyan/white.
+   const color BG       = C'16,20,24';        // dark slate
+   const color FRAME    = g_rainbowColor;
+   const color HDR_CLR  = g_rainbowColor;
+   const color KEY_CLR  = C'168,176,188';     // muted slate
+   const color VAL_CLR  = clrWhite;
+   const color POS_CLR  = C'127,209,127';     // soft green
+   const color NEG_CLR  = C'255,91,91';       // soft red
+   const color OK_CLR   = C'127,209,127';
+   const color BAD_CLR  = C'255,91,91';
+   const color BAR_RAIL = C'34,40,49';
+   const color THR_CLR  = C'255,180,84';      // threshold marker (amber)
+
+   // Total rows: 8 header rows + 3 news + 7 strategy bars
+   int H = PADY * 2 + 8 * DY + 3 * (DY - 2) + 6 + 7 * DY + 4;
+
+   // ── CONTAINER ──────────────────────────────────────────────────────
+   Panel_MakeRect("DYN_BG",     CORNER_LEFT_UPPER, OX,     OY,     W,     H,     BG);
+   Panel_MakeRect("DYN_FRAME",  CORNER_LEFT_UPPER, OX,     OY,     W,     1,     FRAME);
+   Panel_MakeRect("DYN_FRAME2", CORNER_LEFT_UPPER, OX,     OY+H-1, W,     1,     FRAME);
+   Panel_MakeRect("DYN_FRAMEL", CORNER_LEFT_UPPER, OX,     OY,     1,     H,     FRAME);
+   Panel_MakeRect("DYN_FRAMER", CORNER_LEFT_UPPER, OX+W-1, OY,     1,     H,     FRAME);
+
+   int x = OX + PADX;
+   int y = OY + PADY;
+
+   // ── HEADER ─────────────────────────────────────────────────────────
+   Panel_MakeLabel("DYN_HDR", CORNER_LEFT_UPPER, x, y,
+                   "OBLIVIOUS · DYNAMIC PANEL", HDR_CLR, 9);
+   y += DY + 2;
+
+   // ── ROW 1 · Account/Server ─────────────────────────────────────────
+   string accLine = AccountName() + " | " + AccountServer();
+   if (StringLen(accLine) > 32) accLine = StringSubstr(accLine, 0, 32) + "…";
+   Panel_MakeLabel("DYN_R1", CORNER_LEFT_UPPER, x, y, accLine, VAL_CLR, 8);
+   y += DY;
+
+   // ── ROW 2 · Balance / Equity / Free Margin ─────────────────────────
    Panel_MakeLabel("DYN_R2", CORNER_LEFT_UPPER, x, y,
-      StringFormat("Bal: %.2f  Eq: %.2f  Free: %.2f",
-         AccountBalance(), AccountEquity(), AccountFreeMargin()), clrWhite, 8);
-   y += dy;
+      StringFormat("Bal %.0f  Eq %.0f  Free %.0f",
+         AccountBalance(), AccountEquity(), AccountFreeMargin()),
+      VAL_CLR, 8);
+   y += DY;
 
-   // Row 3: Spread | Session
+   // ── ROW 3 · Spread / Session ───────────────────────────────────────
    int spreadPts = (int)MarketInfo(Symbol(), MODE_SPREAD);
    Panel_MakeLabel("DYN_R3", CORNER_LEFT_UPPER, x, y,
-      StringFormat("Spread: %d pts | Session: %s", spreadPts, Panel_GetSessionName()),
-      clrWhite, 8);
-   y += dy;
+      StringFormat("Spread %d pts · %s", spreadPts, Panel_GetSessionName()),
+      KEY_CLR, 8);
+   y += DY + 2;
 
-   // Row 4: Daily P/L
-   color dClr = g_dailyProfit >= 0 ? g_rainbowColor : clrRed;
-   Panel_MakeLabel("DYN_R4", CORNER_LEFT_UPPER, x, y,
-      StringFormat("Daily P/L:   %+.2f", g_dailyProfit), dClr, 9);
-   y += dy;
+   // ── ROWS 4-6 · Daily / Weekly / Monthly PnL ────────────────────────
+   color dClr = (g_dailyProfit  >= 0) ? POS_CLR : NEG_CLR;
+   color wClr = (weeklyProfit   >= 0) ? POS_CLR : NEG_CLR;
+   color mClr = (monthlyProfit  >= 0) ? POS_CLR : NEG_CLR;
+   Panel_MakeLabel("DYN_R4_K", CORNER_LEFT_UPPER, x,      y, "Daily",   KEY_CLR, 8);
+   Panel_MakeLabel("DYN_R4_V", CORNER_LEFT_UPPER, x + 60, y,
+                   StringFormat("%+.2f", g_dailyProfit), dClr, 9);
+   y += DY;
+   Panel_MakeLabel("DYN_R5_K", CORNER_LEFT_UPPER, x,      y, "Weekly",  KEY_CLR, 8);
+   Panel_MakeLabel("DYN_R5_V", CORNER_LEFT_UPPER, x + 60, y,
+                   StringFormat("%+.2f", weeklyProfit), wClr, 9);
+   y += DY;
+   Panel_MakeLabel("DYN_R6_K", CORNER_LEFT_UPPER, x,      y, "Monthly", KEY_CLR, 8);
+   Panel_MakeLabel("DYN_R6_V", CORNER_LEFT_UPPER, x + 60, y,
+                   StringFormat("%+.2f", monthlyProfit), mClr, 9);
+   y += DY + 2;
 
-   // Row 5: Weekly P/L
-   color wClr = weeklyProfit >= 0 ? g_rainbowColor : clrRed;
-   Panel_MakeLabel("DYN_R5", CORNER_LEFT_UPPER, x, y,
-      StringFormat("Weekly P/L:  %+.2f", weeklyProfit), wClr, 9);
-   y += dy;
-
-   // Row 6: Monthly P/L
-   color mClr = monthlyProfit >= 0 ? g_rainbowColor : clrRed;
-   Panel_MakeLabel("DYN_R6", CORNER_LEFT_UPPER, x, y,
-      StringFormat("Monthly P/L: %+.2f", monthlyProfit), mClr, 9);
-   y += dy;
-
-   // Row 7: TP/SL mode
+   // ── ROW 7 · TP/SL mode + AI bridge ─────────────────────────────────
    string modeStr = IsTPSL_AI() ? "AI" : "NATIVE";
-   Panel_MakeLabel("DYN_R7A", CORNER_LEFT_UPPER, x, y,
-      "TP/SL: " + modeStr, clrWhite, 8);
-   y += dy;
+   Panel_MakeLabel("DYN_R7_K", CORNER_LEFT_UPPER, x,      y, "TP/SL",   KEY_CLR, 8);
+   Panel_MakeLabel("DYN_R7_V", CORNER_LEFT_UPPER, x + 60, y, modeStr,   VAL_CLR, 8);
+   Panel_MakeLabel("DYN_R7_K2", CORNER_LEFT_UPPER, x + 110, y, "Bridge", KEY_CLR, 8);
+   Panel_MakeLabel("DYN_R7_V2", CORNER_LEFT_UPPER, x + 160, y,
+                   g_BridgeConnected ? "ONLINE" : "OFFLINE",
+                   g_BridgeConnected ? OK_CLR  : BAD_CLR, 8);
+   y += DY + 4;
 
-   // Row 8: AI status
-   string aiStr   = g_BridgeConnected ? "CONNECTED" : "DISCONNECTED";
-   color  aiClr   = g_BridgeConnected ? g_rainbowColor : clrRed;
-   Panel_MakeLabel("DYN_R8_LBL", CORNER_LEFT_UPPER, x, y, "AI: ", clrWhite, 8);
-   Panel_MakeLabel("DYN_R8_VAL", CORNER_LEFT_UPPER, x + 30, y, aiStr, aiClr, 8);
-   y += dy + 2;
-
-   // Rows 9-11: Latest 3 news
+   // ── NEWS (latest 3) ────────────────────────────────────────────────
+   Panel_MakeLabel("DYN_NEWS_H", CORNER_LEFT_UPPER, x, y, "RECENT NEWS", HDR_CLR, 8);
+   y += DY - 2;
    for (int n = 0; n < 3; n++) {
-      string nTxt = (StringLen(g_dynNews[n]) > 0) ? g_dynNews[n] : " ";
-      if (StringLen(nTxt) > 45) nTxt = StringSubstr(nTxt, 0, 45) + "..";
-      Panel_MakeLabel("DYN_NEWS_" + IntegerToString(n), CORNER_LEFT_UPPER, x, y,
-         nTxt, clrWhite, 7);
-      y += dy - 2;
+      string nTxt = (StringLen(g_dynNews[n]) > 0) ? g_dynNews[n] : "—";
+      if (StringLen(nTxt) > 36) nTxt = StringSubstr(nTxt, 0, 36) + "…";
+      Panel_MakeLabel("DYN_NEWS_" + IntegerToString(n), CORNER_LEFT_UPPER,
+                      x, y, nTxt, KEY_CLR, 7);
+      y += DY - 3;
    }
-   y += 4;
+   y += 6;
 
-   // Strategy confidence bars
+   // ── CONFIDENCE BARS ────────────────────────────────────────────────
+   Panel_MakeLabel("DYN_BARS_H", CORNER_LEFT_UPPER, x, y, "STRATEGY CONFIDENCE", HDR_CLR, 8);
+   y += DY - 2;
    string strats[7] = {"Predicted","Grid","Breakout","FVG","SMC","ICT","Reverse"};
-   int barW = 120;
-   int barH = 8;
-
+   double threshold = (double)AiMinConfidence;
    for (int s = 0; s < 7; s++) {
-      double conf = GetStrategyConfidence(strats[s]);
-      double threshold = (double)AiMinConfidence;
-      double pct = MathMin(100.0, MathMax(0.0, conf));
-      double ratio = (threshold > 0) ? (conf / threshold) : 1.0;
-
+      double conf  = GetStrategyConfidence(strats[s]);
+      double pct   = MathMin(100.0, MathMax(0.0, conf));
+      // Color: gray below 1/3 threshold, amber below threshold, green above.
       color barClr;
-      if (ratio >= 1.0)      barClr = g_rainbowColor;
-      else if (ratio >= 0.5) barClr = g_rainbowColor;
-      else                   barClr = g_rainbowColor;
-
-      int fillW = (int)(barW * pct / 100.0);
+      if (pct >= threshold)         barClr = POS_CLR;
+      else if (pct >= threshold/2)  barClr = THR_CLR;
+      else                          barClr = C'107,114,128';
+      int fillW = (int)(BAR_W * pct / 100.0);
       if (fillW < 1) fillW = 1;
 
       Panel_MakeLabel("DYN_SNAME_" + IntegerToString(s), CORNER_LEFT_UPPER,
-         x, y + 1, strats[s], clrWhite, 8);
-
+         x, y + 1, strats[s], VAL_CLR, 8);
+      // Rail (empty bar)
+      Panel_MakeRect("DYN_SBAR_BG_" + IntegerToString(s), CORNER_LEFT_UPPER,
+         x + BAR_X, y + 3, BAR_W, BAR_H, BAR_RAIL);
+      // Fill
       Panel_MakeRect("DYN_SBAR_FG_" + IntegerToString(s), CORNER_LEFT_UPPER,
-         x + 85, y + 2, fillW, barH, barClr);
-
+         x + BAR_X, y + 3, fillW, BAR_H, barClr);
+      // Threshold marker (1px tick on the rail at the threshold position)
+      int thrX = x + BAR_X + (int)(BAR_W * threshold / 100.0);
+      Panel_MakeRect("DYN_SBAR_TH_" + IntegerToString(s), CORNER_LEFT_UPPER,
+         thrX, y + 2, 1, BAR_H + 2, THR_CLR);
+      // Percent text
       Panel_MakeLabel("DYN_SPCT_" + IntegerToString(s), CORNER_LEFT_UPPER,
-         x + 85 + barW + 5, y + 1,
-         DoubleToString(pct, 0) + "%",
-         barClr, 8);
-
-      y += dy;
+         x + BAR_X + BAR_W + 6, y + 1,
+         DoubleToString(pct, 0) + "%", barClr, 8);
+      y += DY;
    }
 
    ChartRedraw();
@@ -32764,33 +35094,51 @@ void TrigPanel_Init() {
 }
 
 void TrigPanel_DrawBar() {
-   int spacing = 90;
-   int totalW = 7 * spacing;
+   // Visual: solid pill-style buttons, centered along the top of the chart.
+   // Width is responsive to chart size; if the chart is too narrow we
+   // shrink the per-button width down to a sensible minimum.
+   const int BTN_H    = 22;
+   const int GAP      = 4;
+   const int Y        = 26;
+   const int MIN_W    = 60;
+   const int MAX_W    = 96;
+
    int chartW = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS, 0);
+   if (chartW <= 0) chartW = 800;
+   int btnW = (chartW - 80) / 7 - GAP;
+   if (btnW > MAX_W) btnW = MAX_W;
+   if (btnW < MIN_W) btnW = MIN_W;
+   int totalW = 7 * btnW + 6 * GAP;
    int startX = (chartW - totalW) / 2;
-   int yPos = 5;
+   if (startX < 0) startX = 0;
 
    for (int i = 0; i < 7; i++) {
       string bName = "TRGBTN_" + IntegerToString(i);
-      color txClr = g_trigToggle[i] ? g_rainbowColor : clrWhite;
-      Panel_MakeLabel(bName, CORNER_LEFT_UPPER, startX + i * spacing, yPos,
-                      g_trigNames[i], txClr, 9);
+      bool   on    = g_trigToggle[i];
+      color  txt   = on ? clrWhite : C'200,206,216';
+      color  bg    = on ? g_rainbowColor : C'27,33,41';
+      Panel_MakeButton(bName, CORNER_LEFT_UPPER,
+                       startX + i * (btnW + GAP), Y, btnW, BTN_H,
+                       g_trigNames[i], txt, bg, 9, on);
    }
 }
 
 void TrigPanel_OnClick(string sparam) {
    if (!TriggerPanel) return;
    for (int i = 0; i < 7; i++) {
-      if (sparam == "TRGBTN_" + IntegerToString(i)) {
+      string bName = "TRGBTN_" + IntegerToString(i);
+      if (sparam == bName) {
          g_trigToggle[i] = !g_trigToggle[i];
-         string bName = "TRGBTN_" + IntegerToString(i);
-         if (g_trigToggle[i]) {
-            ObjectSetInteger(0, bName, OBJPROP_COLOR, g_rainbowColor);
-            TrigPanel_DrawZones(g_trigNames[i]);
-         } else {
-            ObjectSetInteger(0, bName, OBJPROP_COLOR, clrWhite);
-            DrawingHelpers_CleanupAll("TRIG_" + g_trigNames[i] + "_");
-         }
+         bool  on = g_trigToggle[i];
+         color bg = on ? g_rainbowColor : C'27,33,41';
+         color tx = on ? clrWhite       : C'200,206,216';
+         // Drive the button visual: pressed/raised state + bg color.
+         ObjectSetInteger(0, bName, OBJPROP_STATE,   on);
+         ObjectSetInteger(0, bName, OBJPROP_BGCOLOR, bg);
+         ObjectSetInteger(0, bName, OBJPROP_COLOR,   tx);
+         ObjectSetInteger(0, bName, OBJPROP_BORDER_COLOR, tx);
+         if (on) TrigPanel_DrawZones(g_trigNames[i]);
+         else    DrawingHelpers_CleanupAll("TRIG_" + g_trigNames[i] + "_");
          ChartRedraw();
          return;
       }
@@ -32825,6 +35173,7 @@ void TrigPanel_DrawHLine(string name, double price, color clr, int style=STYLE_D
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_STYLE, style);
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }
@@ -32839,19 +35188,80 @@ void TrigPanel_DrawRect(string name, datetime t1, double p1, datetime t2, double
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }
 
+// FASE 3 - calcola l'anchor temporale al CENTRO del chart visibile
+// (no piu' label attaccato al bordo destro). Fallback su Time[0]
+// se la chart-info non e' disponibile.
+datetime TrigPanel_GetCenterTime() {
+   int firstVis    = (int)ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR, 0);
+   int visibleBars = (int)ChartGetInteger(0, CHART_VISIBLE_BARS, 0);
+   if (firstVis <= 0 || visibleBars <= 0) return Time[0];
+   int centerShift = firstVis - (visibleBars / 2);
+   if (centerShift < 0) centerShift = 0;
+   if (centerShift >= Bars) centerShift = Bars - 1;
+   return iTime(Symbol(), 0, centerShift);
+}
+
+// FASE 3+7 - color coerente per strategia (no piu' g_rainbowColor
+// che oscilla). Riusa lo schema OBL_StrategyColor che e' gia'
+// definito per gli overlay TpSl/Staging/Liquidity.
+color TrigPanel_StrategyColor(string strat) {
+   return OBL_StrategyColor(strat);
+}
+
+// FASE 3 - label centrato per linee orizzontali.
+// Default anchor = center visibile; opzionalmente passabile per
+// label sopra/dentro rettangoli (overload sotto).
 void TrigPanel_DrawLineLabel(string name, double price, string label) {
+   datetime anchor = TrigPanel_GetCenterTime();
    if (ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_TEXT, 0, Time[0], price);
-   ObjectSetString(0, name, OBJPROP_TEXT, label);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, g_rainbowColor);
-   ObjectSetString(0, name, OBJPROP_FONT, "Arial");
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 7);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_UPPER);
+      ObjectCreate(0, name, OBJ_TEXT, 0, anchor, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, anchor);
+   ObjectSetDouble (0, name, OBJPROP_PRICE, price);
+   ObjectSetString (0, name, OBJPROP_TEXT, label);
+   // Color owner-aware: se il name inizia con TRIG_<strat>_ usa
+   // OBL_StrategyColor(strat); altrimenti g_rainbowColor.
+   color clr = g_rainbowColor;
+   if (StringFind(name, "TRIG_") == 0) {
+      int p1 = 5;
+      int p2 = StringFind(name, "_", p1);
+      if (p2 > p1) {
+         string strat = StringSubstr(name, p1, p2 - p1);
+         clr = TrigPanel_StrategyColor(strat);
+      }
+   }
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetString (0, name, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LOWER);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
+// Overload: label posizionato al centro orizzontale di una zona
+// (rettangolo) tra t1 e t2, leggermente sopra il livello price.
+void TrigPanel_DrawZoneLabel(string name, datetime t1, datetime t2,
+                              double price, string label, color clr) {
+   datetime midT;
+   if (t1 > 0 && t2 > 0 && t1 != t2) {
+      midT = (datetime)((long)t1 / 2 + (long)t2 / 2);
+   } else {
+      midT = TrigPanel_GetCenterTime();
+   }
+   if (ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TEXT, 0, midT, price);
+   ObjectSetInteger(0, name, OBJPROP_TIME, midT);
+   ObjectSetDouble (0, name, OBJPROP_PRICE, price);
+   ObjectSetString (0, name, OBJPROP_TEXT, label);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetString (0, name, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LOWER);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
 }
 
 void TrigPanel_DrawPredictedZones(string pfx) {
+   color cs = TrigPanel_StrategyColor("Predicted");
    for (int i = OrdersTotal() - 1; i >= 0; i--) {
       if (!OrderSelect(i, SELECT_BY_POS)) continue;
       if (OrderMagicNumber() != PredictedMagic) continue;
@@ -32860,83 +35270,160 @@ void TrigPanel_DrawPredictedZones(string pfx) {
       if (ot == OP_BUYLIMIT || ot == OP_SELLLIMIT ||
           ot == OP_BUYSTOP  || ot == OP_SELLSTOP) {
          string tkt = IntegerToString(OrderTicket());
-         string lbl = "PDH";
-         if (ot == OP_SELLLIMIT) lbl = "PDH";
-         else if (ot == OP_BUYLIMIT) lbl = "PDL";
-         else if (ot == OP_BUYSTOP)  lbl = "BE";
-         else if (ot == OP_SELLSTOP) lbl = "NO";
-         TrigPanel_DrawHLine(pfx + tkt, OrderOpenPrice(), g_rainbowColor, STYLE_DASHDOTDOT);
+         string lbl = "PRED ENTRY";
+         if      (ot == OP_BUYLIMIT)  lbl = "PRED BUY LMT";
+         else if (ot == OP_SELLLIMIT) lbl = "PRED SELL LMT";
+         else if (ot == OP_BUYSTOP)   lbl = "PRED BUY STP";
+         else if (ot == OP_SELLSTOP)  lbl = "PRED SELL STP";
+         TrigPanel_DrawHLine(pfx + tkt, OrderOpenPrice(), cs, STYLE_DASHDOTDOT);
          TrigPanel_DrawLineLabel(pfx + tkt + "_LBL", OrderOpenPrice(), lbl);
+         if (OrderStopLoss() > 0) {
+            TrigPanel_DrawHLine(pfx + tkt + "_SL", OrderStopLoss(), clrCrimson, STYLE_DOT);
+            TrigPanel_DrawLineLabel(pfx + tkt + "_SL_LBL", OrderStopLoss(), "PRED SL #" + tkt);
+         }
+         if (OrderTakeProfit() > 0) {
+            TrigPanel_DrawHLine(pfx + tkt + "_TP", OrderTakeProfit(), cs, STYLE_DOT);
+            TrigPanel_DrawLineLabel(pfx + tkt + "_TP_LBL", OrderTakeProfit(), "PRED TP #" + tkt);
+         }
       }
    }
 }
 
 void TrigPanel_DrawGridZones(string pfx) {
+   color cs = TrigPanel_StrategyColor("Grid");
    for (int g = 0; g < g_gridCount && g < 8; g++) {
       if (!g_grid[g].isActive) continue;
       double seed = g_grid[g].seedPrice;
       if (seed <= 0) continue;
       double atr = iATR(Symbol(), Period(), 14, 1);
       if (atr <= 0) atr = 100 * Point;
-      for (int lv = 0; lv < g_grid[g].levelCount && lv < MaxGridLevels; lv++) {
+      // FASE 5 FIX: disegna TUTTI i livelli previsti dalla logica
+      // owner Grid (MaxGridLevels), non solo i primi 3.
+      // Cap a max 12 oggetti grafici per chart leggibile.
+      int maxLv = MathMin(MaxGridLevels, 12);
+      int shownLevels = MathMax(1, MathMin(g_grid[g].levelCount, maxLv));
+      // Lot progression preview: lot_n = baseLot * mult^n
+      double baseLot = ManualLot;
+      double mult    = (GridLotMultiplier > 1.0 ? GridLotMultiplier : 2.0);
+      for (int lv = 0; lv < shownLevels; lv++) {
          double above = seed + atr * (lv + 1) * 0.3;
          double below = seed - atr * (lv + 1) * 0.3;
-         string uName = pfx + IntegerToString(g) + "_U" + IntegerToString(lv);
-         string dName = pfx + IntegerToString(g) + "_D" + IntegerToString(lv);
-         TrigPanel_DrawHLine(uName, above, g_rainbowColor, STYLE_DOT);
-         TrigPanel_DrawLineLabel(uName + "_LBL", above, "GL" + IntegerToString(lv + 1));
-         TrigPanel_DrawHLine(dName, below, g_rainbowColor, STYLE_DOT);
-         TrigPanel_DrawLineLabel(dName + "_LBL", below, "GL" + IntegerToString(lv + 1));
+         double lotLv = baseLot * MathPow(mult, (double)(lv + 1));
+         string uName = StringFormat("%sG%d_U%d", pfx, g, lv);
+         string dName = StringFormat("%sG%d_D%d", pfx, g, lv);
+         TrigPanel_DrawHLine(uName, above, cs, STYLE_DOT);
+         TrigPanel_DrawLineLabel(uName + "_LBL", above,
+                                  StringFormat("Grid +%d (x%.2f)", lv + 1, lotLv));
+         TrigPanel_DrawHLine(dName, below, cs, STYLE_DOT);
+         TrigPanel_DrawLineLabel(dName + "_LBL", below,
+                                  StringFormat("Grid -%d (x%.2f)", lv + 1, lotLv));
       }
-      string seedName = pfx + "SEED_" + IntegerToString(g);
-      TrigPanel_DrawHLine(seedName, seed, g_rainbowColor, STYLE_SOLID);
-      TrigPanel_DrawLineLabel(seedName + "_LBL", seed, "SEED");
+      string seedName = StringFormat("%sSEED_G%d", pfx, g);
+      TrigPanel_DrawHLine(seedName, seed, cs, STYLE_SOLID);
+      TrigPanel_DrawLineLabel(seedName + "_LBL", seed, "Grid Seed");
+      // Next buy/sell suggested (1 livello sopra/sotto seed corrente)
+      double nextBuy  = seed - atr * 0.3;
+      double nextSell = seed + atr * 0.3;
+      TrigPanel_DrawHLine(StringFormat("%sNB_G%d", pfx, g), nextBuy,  cs, STYLE_DASH);
+      TrigPanel_DrawLineLabel(StringFormat("%sNB_G%d_LBL", pfx, g), nextBuy, "Next Buy");
+      TrigPanel_DrawHLine(StringFormat("%sNS_G%d", pfx, g), nextSell, cs, STYLE_DASH);
+      TrigPanel_DrawLineLabel(StringFormat("%sNS_G%d_LBL", pfx, g), nextSell, "Next Sell");
+      // Average del basket attivo (se ci sono ordini Grid aperti)
+      double avgPrice = 0; int avgCount = 0;
+      for (int oi = OrdersTotal() - 1; oi >= 0; oi--) {
+         if (!OrderSelect(oi, SELECT_BY_POS)) continue;
+         if (OrderMagicNumber() != GridMagic)  continue;
+         if (OrderSymbol() != Symbol())        continue;
+         if (OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+         avgPrice += OrderOpenPrice(); avgCount++;
+      }
+      if (avgCount > 0) {
+         avgPrice /= avgCount;
+         string avgName = StringFormat("%sAVG_G%d", pfx, g);
+         TrigPanel_DrawHLine(avgName, avgPrice, cs, STYLE_DASHDOTDOT);
+         TrigPanel_DrawLineLabel(avgName + "_LBL", avgPrice, "Grid Avg");
+      }
    }
 }
 
 void TrigPanel_DrawBreakoutZones(string pfx) {
-   int lookback = 20;
+   color cs = TrigPanel_StrategyColor("Breakout");
+   int lookback = Mini_GetSwingLookback("Breakout");
+   if (lookback < 10 || lookback > Bars-2) lookback = 20;
    double highest = iHigh(Symbol(), Period(), iHighest(Symbol(), Period(), MODE_HIGH, lookback, 1));
-   double lowest  = iLow(Symbol(), Period(), iLowest(Symbol(), Period(), MODE_LOW, lookback, 1));
-   TrigPanel_DrawHLine(pfx + "HIGH", highest, g_rainbowColor, STYLE_SOLID);
-   TrigPanel_DrawLineLabel(pfx + "HIGH_LBL", highest, "BSL");
-   TrigPanel_DrawHLine(pfx + "LOW", lowest, g_rainbowColor, STYLE_SOLID);
-   TrigPanel_DrawLineLabel(pfx + "LOW_LBL", lowest, "SSL");
-   double mid = (highest + lowest) / 2.0;
-   TrigPanel_DrawHLine(pfx + "MID", mid, g_rainbowColor, STYLE_DOT);
-   TrigPanel_DrawLineLabel(pfx + "MID_LBL", mid, "EQL");
+   double lowest  = iLow (Symbol(), Period(), iLowest (Symbol(), Period(), MODE_LOW,  lookback, 1));
+   double mid     = (highest + lowest) / 2.0;
+   double atr     = iATR(Symbol(), Period(), 14, 1);
+   TrigPanel_DrawHLine(pfx + "HIGH", highest, cs, STYLE_SOLID);
+   TrigPanel_DrawLineLabel(pfx + "HIGH_LBL", highest, "BO HIGH (BSL)");
+   TrigPanel_DrawHLine(pfx + "LOW", lowest, cs, STYLE_SOLID);
+   TrigPanel_DrawLineLabel(pfx + "LOW_LBL", lowest, "BO LOW (SSL)");
+   TrigPanel_DrawHLine(pfx + "MID", mid, cs, STYLE_DOT);
+   TrigPanel_DrawLineLabel(pfx + "MID_LBL", mid, "BO EQL");
+   // Retest zones adaptive (sopra/sotto range): zona ATR-buffered
+   // dove tipicamente avviene il retest LIMIT.
+   if (atr > 0) {
+      datetime tL = iTime(Symbol(), 0, MathMin(lookback, Bars-1));
+      datetime tR = Time[0];
+      TrigPanel_DrawRect(pfx + "RETEST_UP",   tL, highest, tR, highest - atr * 0.4, cs);
+      TrigPanel_DrawZoneLabel(pfx + "RETEST_UP_LBL", tL, tR, highest,
+                              "BO RETEST UP", cs);
+      TrigPanel_DrawRect(pfx + "RETEST_DOWN", tL, lowest,  tR, lowest  + atr * 0.4, cs);
+      TrigPanel_DrawZoneLabel(pfx + "RETEST_DOWN_LBL", tL, tR, lowest,
+                              "BO RETEST DOWN", cs);
+   }
 }
 
 void TrigPanel_DrawFVGZones(string pfx) {
+   color cs = TrigPanel_StrategyColor("FVG");
    int found = 0;
    for (int i = 2; i < 50 && found < 5; i++) {
       double h0 = iHigh(Symbol(), Period(), i);
       double l0 = iLow(Symbol(), Period(), i);
       double h2 = iHigh(Symbol(), Period(), i - 2);
       double l2 = iLow(Symbol(), Period(), i - 2);
+      // BULL FVG: gap up (l2 > h0)
       if (l2 > h0) {
-         TrigPanel_DrawRect(pfx + "BULL_" + IntegerToString(found),
-            iTime(Symbol(), Period(), i), h0,
-            iTime(Symbol(), Period(), i - 2), l2, g_rainbowColor);
+         datetime tL = iTime(Symbol(), Period(), i);
+         datetime tR = iTime(Symbol(), Period(), MathMax(0, i - 2));
+         string nm = pfx + "BULL_" + IntegerToString(found);
+         TrigPanel_DrawRect(nm, tL, h0, tR, l2, cs);
+         TrigPanel_DrawZoneLabel(nm + "_LBL", tL, tR, l2, "BULL FVG", cs);
+         // CE / 50% line
+         double ce = (h0 + l2) / 2.0;
+         TrigPanel_DrawHLine(nm + "_CE", ce, cs, STYLE_DOT);
+         TrigPanel_DrawLineLabel(nm + "_CE_LBL", ce, "FVG CE");
          found++;
       }
+      // BEAR FVG: gap down (h2 < l0)
       if (h2 < l0) {
-         TrigPanel_DrawRect(pfx + "BEAR_" + IntegerToString(found),
-            iTime(Symbol(), Period(), i), l0,
-            iTime(Symbol(), Period(), i - 2), h2, g_rainbowColor);
+         datetime tL = iTime(Symbol(), Period(), i);
+         datetime tR = iTime(Symbol(), Period(), MathMax(0, i - 2));
+         string nm = pfx + "BEAR_" + IntegerToString(found);
+         TrigPanel_DrawRect(nm, tL, l0, tR, h2, cs);
+         TrigPanel_DrawZoneLabel(nm + "_LBL", tL, tR, l0, "BEAR FVG", cs);
+         double ce = (l0 + h2) / 2.0;
+         TrigPanel_DrawHLine(nm + "_CE", ce, cs, STYLE_DOT);
+         TrigPanel_DrawLineLabel(nm + "_CE_LBL", ce, "FVG CE");
          found++;
       }
    }
 }
 
 void TrigPanel_DrawSMCZones(string pfx) {
-   int lookback = 30;
+   color cs = TrigPanel_StrategyColor("SMC");
+   int lookback = Mini_GetSwingLookback("SMC");
+   if (lookback < 10 || lookback > Bars-2) lookback = 30;
    double swingH = iHigh(Symbol(), Period(), iHighest(Symbol(), Period(), MODE_HIGH, lookback, 1));
-   double swingL = iLow(Symbol(), Period(), iLowest(Symbol(), Period(), MODE_LOW, lookback, 1));
-   TrigPanel_DrawHLine(pfx + "BOS_H", swingH, g_rainbowColor, STYLE_DASH);
-   TrigPanel_DrawLineLabel(pfx + "BOS_H_LBL", swingH, "BOS");
-   TrigPanel_DrawHLine(pfx + "BOS_L", swingL, g_rainbowColor, STYLE_DASH);
-   TrigPanel_DrawLineLabel(pfx + "BOS_L_LBL", swingL, "BOS");
+   double swingL = iLow (Symbol(), Period(), iLowest (Symbol(), Period(), MODE_LOW,  lookback, 1));
+   double eq     = (swingH + swingL) / 2.0;
+   TrigPanel_DrawHLine(pfx + "BOS_H", swingH, cs, STYLE_DASH);
+   TrigPanel_DrawLineLabel(pfx + "BOS_H_LBL", swingH, "BOS HIGH");
+   TrigPanel_DrawHLine(pfx + "BOS_L", swingL, cs, STYLE_DASH);
+   TrigPanel_DrawLineLabel(pfx + "BOS_L_LBL", swingL, "BOS LOW");
+   TrigPanel_DrawHLine(pfx + "EQ", eq, cs, STYLE_DOT);
+   TrigPanel_DrawLineLabel(pfx + "EQ_LBL", eq, "SMC EQL");
+   // Order block (primo che soddisfa)
    for (int i = 3; i < 30; i++) {
       double h_i = iHigh(Symbol(), Period(), i);
       double l_i = iLow(Symbol(), Period(), i);
@@ -32945,55 +35432,77 @@ void TrigPanel_DrawSMCZones(string pfx) {
       bool bearOB = (c_i < o_i) && (h_i >= swingH * 0.999);
       bool bullOB = (c_i > o_i) && (l_i <= swingL * 1.001);
       if (bearOB) {
-         TrigPanel_DrawRect(pfx + "OB_BEAR_" + IntegerToString(i),
-            iTime(Symbol(), Period(), i), h_i,
-            iTime(Symbol(), Period(), MathMax(0, i - 2)), (h_i + l_i) / 2.0, g_rainbowColor);
+         datetime tL = iTime(Symbol(), Period(), i);
+         datetime tR = iTime(Symbol(), Period(), MathMax(0, i - 2));
+         double  mid = (h_i + l_i) / 2.0;
+         TrigPanel_DrawRect(pfx + "OB_BEAR", tL, h_i, tR, mid, cs);
+         TrigPanel_DrawZoneLabel(pfx + "OB_BEAR_LBL", tL, tR, h_i, "BEAR OB", cs);
          break;
       }
       if (bullOB) {
-         TrigPanel_DrawRect(pfx + "OB_BULL_" + IntegerToString(i),
-            iTime(Symbol(), Period(), i), l_i,
-            iTime(Symbol(), Period(), MathMax(0, i - 2)), (h_i + l_i) / 2.0, g_rainbowColor);
+         datetime tL = iTime(Symbol(), Period(), i);
+         datetime tR = iTime(Symbol(), Period(), MathMax(0, i - 2));
+         double  mid = (h_i + l_i) / 2.0;
+         TrigPanel_DrawRect(pfx + "OB_BULL", tL, l_i, tR, mid, cs);
+         TrigPanel_DrawZoneLabel(pfx + "OB_BULL_LBL", tL, tR, l_i, "BULL OB", cs);
          break;
       }
    }
 }
 
 void TrigPanel_DrawICTZones(string pfx) {
-   int lookback = 50;
+   color cs = TrigPanel_StrategyColor("ICT");
+   int lookback = Mini_GetSwingLookback("ICT");
+   if (lookback < 10 || lookback > Bars-2) lookback = 50;
    double swH = iHigh(Symbol(), Period(), iHighest(Symbol(), Period(), MODE_HIGH, lookback, 1));
-   double swL = iLow(Symbol(), Period(), iLowest(Symbol(), Period(), MODE_LOW, lookback, 1));
+   double swL = iLow (Symbol(), Period(), iLowest (Symbol(), Period(), MODE_LOW,  lookback, 1));
    double range = swH - swL;
+   if (range <= 0) return;
    double ote618 = swH - range * 0.618;
    double ote786 = swH - range * 0.786;
-   TrigPanel_DrawHLine(pfx + "OTE_618", ote618, g_rainbowColor, STYLE_DASH);
-   TrigPanel_DrawLineLabel(pfx + "OTE_618_LBL", ote618, "OTE .618");
-   TrigPanel_DrawHLine(pfx + "OTE_786", ote786, g_rainbowColor, STYLE_DASH);
-   TrigPanel_DrawLineLabel(pfx + "OTE_786_LBL", ote786, "OTE .786");
-   TrigPanel_DrawRect(pfx + "OTE_ZONE", Time[0], ote618, Time[50], ote786, g_rainbowColor);
-   TrigPanel_DrawHLine(pfx + "LIQ_HIGH", swH, g_rainbowColor, STYLE_DOT);
-   TrigPanel_DrawLineLabel(pfx + "LIQ_HIGH_LBL", swH, "BSL");
-   TrigPanel_DrawHLine(pfx + "LIQ_LOW", swL, g_rainbowColor, STYLE_DOT);
-   TrigPanel_DrawLineLabel(pfx + "LIQ_LOW_LBL", swL, "SSL");
    double eq = (swH + swL) / 2.0;
-   TrigPanel_DrawHLine(pfx + "EQ", eq, g_rainbowColor, STYLE_DOT);
-   TrigPanel_DrawLineLabel(pfx + "EQ_LBL", eq, "EQL");
+   // OTE zone
+   datetime tL = iTime(Symbol(), 0, MathMin(lookback, Bars-1));
+   datetime tR = Time[0];
+   TrigPanel_DrawRect(pfx + "OTE_ZONE", tL, ote618, tR, ote786, cs);
+   TrigPanel_DrawZoneLabel(pfx + "OTE_ZONE_LBL", tL, tR, ote618, "ICT OTE 0.618-0.786", cs);
+   TrigPanel_DrawHLine(pfx + "OTE_618", ote618, cs, STYLE_DASH);
+   TrigPanel_DrawLineLabel(pfx + "OTE_618_LBL", ote618, "OTE 0.618");
+   TrigPanel_DrawHLine(pfx + "OTE_786", ote786, cs, STYLE_DASH);
+   TrigPanel_DrawLineLabel(pfx + "OTE_786_LBL", ote786, "OTE 0.786");
+   TrigPanel_DrawHLine(pfx + "LIQ_HIGH", swH, cs, STYLE_DOT);
+   TrigPanel_DrawLineLabel(pfx + "LIQ_HIGH_LBL", swH, "ICT BSL");
+   TrigPanel_DrawHLine(pfx + "LIQ_LOW", swL, cs, STYLE_DOT);
+   TrigPanel_DrawLineLabel(pfx + "LIQ_LOW_LBL", swL, "ICT SSL");
+   TrigPanel_DrawHLine(pfx + "EQ", eq, cs, STYLE_DOT);
+   TrigPanel_DrawLineLabel(pfx + "EQ_LBL", eq, "ICT EQL");
 }
 
 void TrigPanel_DrawReverseZones(string pfx) {
+   color cs = TrigPanel_StrategyColor("Reverse");
    double bbUpper = iBands(Symbol(), Period(), 20, 2, 0, PRICE_CLOSE, MODE_UPPER, 0);
    double bbLower = iBands(Symbol(), Period(), 20, 2, 0, PRICE_CLOSE, MODE_LOWER, 0);
    double bbMid   = iBands(Symbol(), Period(), 20, 2, 0, PRICE_CLOSE, MODE_MAIN, 0);
-   TrigPanel_DrawHLine(pfx + "BB_UP", bbUpper, g_rainbowColor, STYLE_DASH);
-   TrigPanel_DrawLineLabel(pfx + "BB_UP_LBL", bbUpper, "BB Upper");
-   TrigPanel_DrawHLine(pfx + "BB_LOW", bbLower, g_rainbowColor, STYLE_DASH);
-   TrigPanel_DrawLineLabel(pfx + "BB_LOW_LBL", bbLower, "BB Lower");
-   TrigPanel_DrawHLine(pfx + "BB_MID", bbMid, g_rainbowColor, STYLE_DOT);
-   TrigPanel_DrawLineLabel(pfx + "BB_MID_LBL", bbMid, "MT");
+   TrigPanel_DrawHLine(pfx + "BB_UP",  bbUpper, cs, STYLE_DASH);
+   TrigPanel_DrawLineLabel(pfx + "BB_UP_LBL",  bbUpper, "REV REJECT TOP");
+   TrigPanel_DrawHLine(pfx + "BB_LOW", bbLower, cs, STYLE_DASH);
+   TrigPanel_DrawLineLabel(pfx + "BB_LOW_LBL", bbLower, "REV REJECT BOT");
+   TrigPanel_DrawHLine(pfx + "BB_MID", bbMid,   cs, STYLE_DOT);
+   TrigPanel_DrawLineLabel(pfx + "BB_MID_LBL", bbMid,   "REV MEAN");
+   // Pivot reclaim recente: ultimi 10 bars high/low
+   double rH = iHigh(Symbol(), 0, iHighest(Symbol(), 0, MODE_HIGH, 10, 1));
+   double rL = iLow (Symbol(), 0, iLowest (Symbol(), 0, MODE_LOW,  10, 1));
+   TrigPanel_DrawHLine(pfx + "RECL_H", rH, cs, STYLE_DOT);
+   TrigPanel_DrawLineLabel(pfx + "RECL_H_LBL", rH, "REV PIVOT HIGH");
+   TrigPanel_DrawHLine(pfx + "RECL_L", rL, cs, STYLE_DOT);
+   TrigPanel_DrawLineLabel(pfx + "RECL_L_LBL", rL, "REV PIVOT LOW");
 }
 
 void TrigPanel_Update() {
    if (!TriggerPanel) return;
+   // Re-paint the bar each tick so chart resizes (CHART_WIDTH_IN_PIXELS
+   // changes) keep the buttons centered and correctly sized.
+   TrigPanel_DrawBar();
    for (int i = 0; i < 7; i++) {
       if (g_trigToggle[i])
          TrigPanel_DrawZones(g_trigNames[i]);
@@ -33003,28 +35512,44 @@ void TrigPanel_Update() {
 // ============================================================
 // SMART PANEL - Active trades with P/L (bottom-right)
 // ============================================================
+// ============================================================
+// SMART PANEL - Active positions with per-row CLOSE button (bottom-right).
+// Layout per row:
+//   [ STRAT/TICKET ]  [ SIDE LOTS ]  [ P/L ]  [ CLOSE ]
+// Up to 8 rows (SMP_MAX_ROWS). When there are no positions, a single
+// "no active positions" placeholder is shown — no objects leak.
+// ============================================================
+#define SMP_MAX_ROWS 8
+
 void SmartPanel_Init() {
    g_smpLastCount = 0;
+   for (int i = 0; i < 16; i++) g_smpRowTicket[i] = 0;
 }
 
 void SmartPanel_Update() {
    if (!SmartPanel) return;
 
-   // Clean previous labels
-   for (int c = 0; c < g_smpLastCount + 2; c++) {
-      string nDel = "SMP_NAME_" + IntegerToString(c);
-      string pDel = "SMP_PNL_" + IntegerToString(c);
-      if (ObjectFind(0, nDel) >= 0) ObjectDelete(0, nDel);
-      if (ObjectFind(0, pDel) >= 0) ObjectDelete(0, pDel);
-   }
+   // ── LAYOUT ─────────────────────────────────────────────────────────
+   const int OX     = 12;      // outer X (from right edge)
+   const int OY     = 12;      // outer Y (from bottom edge)
+   const int W      = 320;
+   const int HDR_H  = 18;
+   const int ROW_H  = 18;
+   const int PADX   = 8;
+   const int PADY   = 6;
 
-   // Collect open orders
-   int tickets[];
-   string names[];
-   double profits[];
-   datetime times[];
+   // Column X offsets (relative to inner left edge)
+   const int COL_STRAT  = 0;
+   const int COL_SIDE   = 110;
+   const int COL_PNL    = 180;
+   const int COL_BTN_X  = 252;
+   const int BTN_W      = 58;
+   const int BTN_H      = 14;
+
+   // ── COLLECT POSITIONS ──────────────────────────────────────────────
+   int tickets[]; string names[]; double profits[]; double lots[];
+   int sides[];   double entries[]; datetime times[];
    int count = 0;
-
    for (int i = OrdersTotal() - 1; i >= 0; i--) {
       if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if (OrderSymbol() != Symbol()) continue;
@@ -33032,55 +35557,181 @@ void SmartPanel_Update() {
       if (OrderType() > OP_SELL) continue;
       int sz = count + 1;
       ArrayResize(tickets, sz);
-      ArrayResize(names, sz);
+      ArrayResize(names,   sz);
       ArrayResize(profits, sz);
-      ArrayResize(times, sz);
+      ArrayResize(lots,    sz);
+      ArrayResize(sides,   sz);
+      ArrayResize(entries, sz);
+      ArrayResize(times,   sz);
       tickets[count] = OrderTicket();
       names[count]   = Panel_MagicToStrategy(OrderMagicNumber());
       profits[count] = OrderProfit() + OrderSwap() + OrderCommission();
+      lots[count]    = OrderLots();
+      sides[count]   = OrderType();
+      entries[count] = OrderOpenPrice();
       times[count]   = OrderOpenTime();
       count++;
    }
-
-   // Sort by open time descending (newest first) - simple bubble
+   // Sort by open time descending (newest first)
    for (int a = 0; a < count - 1; a++) {
       for (int b = a + 1; b < count; b++) {
          if (times[b] > times[a]) {
-            datetime tmpT = times[a]; times[a] = times[b]; times[b] = tmpT;
-            string tmpN = names[a]; names[a] = names[b]; names[b] = tmpN;
-            double tmpP = profits[a]; profits[a] = profits[b]; profits[b] = tmpP;
-            int tmpK = tickets[a]; tickets[a] = tickets[b]; tickets[b] = tmpK;
+            datetime tmpT=times[a]; times[a]=times[b]; times[b]=tmpT;
+            string   tmpN=names[a]; names[a]=names[b]; names[b]=tmpN;
+            double   tmpP=profits[a]; profits[a]=profits[b]; profits[b]=tmpP;
+            double   tmpL=lots[a];  lots[a]=lots[b];  lots[b]=tmpL;
+            int      tmpS=sides[a]; sides[a]=sides[b]; sides[b]=tmpS;
+            double   tmpE=entries[a]; entries[a]=entries[b]; entries[b]=tmpE;
+            int      tmpK=tickets[a]; tickets[a]=tickets[b]; tickets[b]=tmpK;
          }
       }
    }
+   int show = MathMin(count, SMP_MAX_ROWS);
 
-   int maxShow = MathMin(count, 10);
-   int x = 15;
-   int yStart = 15;
-   int dy = 16;
-
-   for (int r = 0; r < maxShow; r++) {
-      color pClr = profits[r] >= 0 ? g_rainbowColor : clrRed;
-      Panel_MakeLabel("SMP_NAME_" + IntegerToString(r), CORNER_RIGHT_LOWER,
-         x + 80, yStart + r * dy, names[r], clrWhite, 9);
-      Panel_MakeLabel("SMP_PNL_" + IntegerToString(r), CORNER_RIGHT_LOWER,
-         x, yStart + r * dy, StringFormat("%+.2f", profits[r]), pClr, 9);
+   // ── CLEAN OBSOLETE ROW OBJECTS (so widow rows don't linger) ────────
+   for (int c = show; c < g_smpLastCount; c++) {
+      string suf = IntegerToString(c);
+      DrawingHelpers_CleanupAll("SMP_R_" + suf + "_");
+      if (ObjectFind(0, "SMP_BTN_" + suf) >= 0) ObjectDelete(0, "SMP_BTN_" + suf);
+      g_smpRowTicket[c] = 0;
+   }
+   if (count == 0 && g_smpLastCount > 0) {
+      // wipe legacy keys from previous schema too
+      DrawingHelpers_CleanupAll("SMP_NAME_");
+      DrawingHelpers_CleanupAll("SMP_PNL_");
    }
 
-   g_smpLastCount = maxShow;
+   // ── COLORS ─────────────────────────────────────────────────────────
+   const color BG       = C'16,20,24';
+   const color FRAME    = g_rainbowColor;
+   const color HDR_CLR  = g_rainbowColor;
+   const color KEY_CLR  = C'168,176,188';
+   const color VAL_CLR  = clrWhite;
+   const color BUY_CLR  = C'127,209,127';
+   const color SELL_CLR = C'255,91,91';
+   const color POS_CLR  = C'127,209,127';
+   const color NEG_CLR  = C'255,91,91';
+   const color BTN_BG   = C'42,20,20';
+   const color BTN_TX   = C'255,91,91';
+
+   // ── CONTAINER ──────────────────────────────────────────────────────
+   int rowsH = MathMax(1, show) * ROW_H;
+   int H     = HDR_H + PADY * 2 + rowsH + 4;
+   Panel_MakeRect("SMP_BG",     CORNER_RIGHT_LOWER, OX,     OY,     W,     H,     BG);
+   Panel_MakeRect("SMP_FRAME",  CORNER_RIGHT_LOWER, OX,     OY,     W,     1,     FRAME);
+   Panel_MakeRect("SMP_FRAME2", CORNER_RIGHT_LOWER, OX,     OY+H-1, W,     1,     FRAME);
+   Panel_MakeRect("SMP_FRAMEL", CORNER_RIGHT_LOWER, OX+W-1, OY,     1,     H,     FRAME);
+   Panel_MakeRect("SMP_FRAMER", CORNER_RIGHT_LOWER, OX,     OY,     1,     H,     FRAME);
+   // Header text — corner is bottom-right so Y grows upward; place text
+   // at the TOP of the container by giving it the largest Y.
+   Panel_MakeLabel("SMP_HDR", CORNER_RIGHT_LOWER, OX + W - PADX,
+                   OY + H - PADY - 2,
+                   "ACTIVE POSITIONS (" + IntegerToString(count) + ")",
+                   HDR_CLR, 9);
+
+   if (show == 0) {
+      Panel_MakeLabel("SMP_EMPTY", CORNER_RIGHT_LOWER,
+                      OX + W - PADX, OY + PADY + ROW_H/2,
+                      "— no active positions —", KEY_CLR, 8);
+      // Ensure no row residuals
+      for (int rr = 0; rr < SMP_MAX_ROWS; rr++) {
+         string suf = IntegerToString(rr);
+         DrawingHelpers_CleanupAll("SMP_R_" + suf + "_");
+         if (ObjectFind(0, "SMP_BTN_" + suf) >= 0) ObjectDelete(0, "SMP_BTN_" + suf);
+         g_smpRowTicket[rr] = 0;
+      }
+      g_smpLastCount = 0;
+      ChartRedraw();
+      return;
+   }
+   // Delete placeholder if previously shown
+   if (ObjectFind(0, "SMP_EMPTY") >= 0) ObjectDelete(0, "SMP_EMPTY");
+
+   // ── PAINT ROWS ─────────────────────────────────────────────────────
+   for (int r = 0; r < show; r++) {
+      string suf = IntegerToString(r);
+      // Y in CORNER_RIGHT_LOWER grows upward. Row 0 = topmost (just under header).
+      int yPx = OY + PADY + (show - 1 - r) * ROW_H;
+      // X anchored to the RIGHT edge: text X = OX + W - PADX - col_offset.
+      int xRight = OX + W - PADX;
+
+      // Strategy + ticket
+      string stratStr = (StringLen(names[r]) > 0 ? names[r] : "—")
+                       + " #" + IntegerToString(tickets[r]);
+      Panel_MakeLabel("SMP_R_" + suf + "_STR", CORNER_RIGHT_LOWER,
+                      xRight - COL_SIDE - 8, yPx, stratStr, VAL_CLR, 8);
+
+      // Side + lots
+      color  sideClr = (sides[r] == OP_BUY) ? BUY_CLR : SELL_CLR;
+      string sideStr = (sides[r] == OP_BUY ? "BUY " : "SELL ") +
+                       DoubleToString(lots[r], 2);
+      Panel_MakeLabel("SMP_R_" + suf + "_SID", CORNER_RIGHT_LOWER,
+                      xRight - COL_PNL - 4, yPx, sideStr, sideClr, 8);
+
+      // P/L
+      color pClr = (profits[r] >= 0) ? POS_CLR : NEG_CLR;
+      Panel_MakeLabel("SMP_R_" + suf + "_PNL", CORNER_RIGHT_LOWER,
+                      xRight - COL_BTN_X + 10, yPx,
+                      StringFormat("%+.2f", profits[r]), pClr, 9);
+
+      // CLOSE button — top-left geometry expressed via right-lower corner
+      Panel_MakeButton("SMP_BTN_" + suf, CORNER_RIGHT_LOWER,
+                       xRight - COL_BTN_X + BTN_W + 8, yPx - 2,
+                       BTN_W, BTN_H,
+                       "CLOSE", BTN_TX, BTN_BG, 7, false);
+
+      g_smpRowTicket[r] = tickets[r];
+   }
+   for (int rr2 = show; rr2 < SMP_MAX_ROWS; rr2++) g_smpRowTicket[rr2] = 0;
+   g_smpLastCount = show;
    ChartRedraw();
+}
+
+// SmartPanel_OnClick — invoked from Orchestrator_OnChartEvent for any
+// object click; we filter for SMP_BTN_<N>. Each row's ticket is captured
+// at paint time into g_smpRowTicket[N] so we don't race the order book
+// in the click handler. Closure flows through the same Cmd_HandleClose-
+// Position path used by the ZMQ command bus → same ownership/lifecycle
+// guards, same OCO peer cleanup, same SmartLog entries.
+void SmartPanel_OnClick(string sparam) {
+   if (!SmartPanel) return;
+   if (StringFind(sparam, "SMP_BTN_") != 0) return;
+   string idxStr = StringSubstr(sparam, StringLen("SMP_BTN_"));
+   int idx = (int)StringToInteger(idxStr);
+   if (idx < 0 || idx >= SMP_MAX_ROWS) return;
+   int ticket = g_smpRowTicket[idx];
+   if (ticket <= 0) return;
+
+   // Bounce the button visual to "raised" so MT4 doesn't leave it stuck.
+   ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+
+   // Build a synthetic command envelope so the same R8 guards run.
+   string envSym = "";
+   if (OrderSelect(ticket, SELECT_BY_TICKET)) envSym = OrderSymbol();
+   string body = StringFormat(
+      "{\"op\":\"CLOSE_POSITION\",\"ticket\":%d,\"symbol\":\"%s\",\"owner\":\"%s\"}",
+      ticket, envSym, "SmartPanel");
+   Cmd_HandleClosePosition(body);
+   // Force a panel refresh so the row disappears immediately on success.
+   SmartPanel_Update();
 }
 
 // ============================================================
 // PANEL CLEANUP
 // ============================================================
 void Panels_Cleanup() {
+   // Dynamic Panel — container + frame + all dynamic content
    DrawingHelpers_CleanupAll("DYN_");
+   // Trigger Panel — strategy toggle buttons + per-strategy zone overlays
    DrawingHelpers_CleanupAll("TRGBTN_");
-   DrawingHelpers_CleanupAll("SMP_NAME_");
-   DrawingHelpers_CleanupAll("SMP_PNL_");
    for (int i = 0; i < 7; i++)
       DrawingHelpers_CleanupAll("TRIG_" + g_trigNames[i] + "_");
+   // Smart Panel — container + frame + row labels + close buttons.
+   // SMP_ catches every object in the current schema; SMP_NAME_/SMP_PNL_
+   // are still listed explicitly to evict residuals from older builds.
+   DrawingHelpers_CleanupAll("SMP_");
+   DrawingHelpers_CleanupAll("SMP_NAME_");
+   DrawingHelpers_CleanupAll("SMP_PNL_");
 }
 
 // ============================================================
@@ -33867,7 +36518,7 @@ int DashboardPanel_DrawTrigger(int x, int y)
                         PANEL_TEXT_COLOR, PANEL_FONT_SIZE);
         y += PANEL_LINE_H;
 
-        int score = Confirmations_Score(
+        int score = (int)Confirmations_Score(
             Symbol(), Ind_TrendDir(Symbol()) > 0 ? OP_BUY : OP_SELL);
         color scoreColor = (score > 70)
                                ? PANEL_GREEN
@@ -35134,7 +37785,7 @@ void UIToggles_OnChartEvent(int id, long lparam, double dparam, string sparam)
       for (int i = 0; i < g_uitoggle_count; i++) {
         if (sparam == g_uitoggles[i].objBg ||
             sparam == g_uitoggles[i].objText) {
-          UIToggle_Toggle(g_uitoggles[i].name);
+          UIToggle_Toggle(i);
           SmartLog("INFO", "UIToggle",
                    g_uitoggles[i].label + " = " +
                        (g_uitoggles[i].state ? "ON" : "OFF"));
@@ -35396,7 +38047,9 @@ void RGB_InitCycle()
 {
       if (__rgb_t0 == 0)
         __rgb_t0 = TimeLocal();
-      EventSetTimer(UPDATE_EVERY_SECONDS);
+      // FASE 9 (Patch 6): EventSetTimer rimosso - collisione con il
+      // timer ufficiale settato in Orchestrator_OnInit (1s). Il colore
+      // RGB e' aggiornato comunque dal medesimo OnTimer.
 }
 
 void RGB_RecolorAllTriggers()
@@ -35452,8 +38105,10 @@ void SMC_Liquidity_Draw()
 
 void FVG_Liquidity_Draw(double hi, double lo, datetime t){
       string name = "FVG_LIQ_" + IntegerToString((int)t);
-      DrawRectFilledNamed(name, t, hi, t + Period() * 60 * 3, lo,
-                          clrDarkSlateGray);
+      // DrawRectFilledNamed expects (..., string label); colour is encoded
+      // in the object property at draw time. Pass empty label to silence
+      // the legacy color-as-label call.
+      DrawRectFilledNamed(name, t, hi, t + Period() * 60 * 3, lo, "");
 }
 
 bool LiquiditySweepOBCombo(double obLevel = 0.0, bool isBuyDir = true) {
@@ -35541,10 +38196,14 @@ bool __AP_DailyDrawdownGuard(){
       if (dayStartEquity <= 0)
         return true;
       double dd = (dayStartEquity - AccountEquity()) / dayStartEquity;
-      // Hard close at 4.5% daily DD
-      if (dd >= 0.045) {
-        Print("[CP] Daily DD >= 4.5%: closing all open positions on ",
-              Symbol());
+      // FASE 5 (Patch 2): dd e' una FRAZIONE (0..1), quindi
+      // confronto con MaxDailyDDPercent / 100.0.
+      // Hard close = limite pieno; warn = 78% del limite.
+      double __cp_hard = MaxDailyDDPercent / 100.0;
+      double __cp_warn = (MaxDailyDDPercent * 0.78) / 100.0;
+      if (dd >= __cp_hard) {
+        PrintFormat("[CP] Daily DD >= %.2f%%: closing all open positions on %s",
+                    MaxDailyDDPercent, Symbol());
         for (int i = OrdersTotal() - 1; i >= 0; --i) {
           if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
             continue;
@@ -35589,10 +38248,10 @@ bool __AP_DailyDrawdownGuard(){
         }
         return false;
       }
-      // Soft block at 3.5% daily DD
-      if (dd >= 0.035) {
-        Print("[CP] Daily DD >= 3.5%: blocking new entries (",
-              DoubleToString(dd * 100, 2), "%)");
+      // Soft block at 78% del DD limit (warn)
+      if (dd >= __cp_warn) {
+        PrintFormat("[CP] Daily DD >= %.2f%% (warn): blocking new entries (%.2f%%)",
+                    MaxDailyDDPercent * 0.78, dd * 100);
         return false;
       }
       return true;
@@ -35606,10 +38265,10 @@ bool __AP_TotalDrawdownGuard(){
         return true;
       double loss = (base - AccountEquity()) /
                     base; // total max loss from challenge start
-      if (loss >= 0.099) {
-        Print("[CP] Total MAX LOSS >= 9.9% from base: blocking new entries "
-              "(base=",
-              DoubleToString(base, 2), ")");
+      // FASE 5 (Patch 2): loss e' FRAZIONE -> MaxTotalDDPercent / 100.0
+      if (loss >= MaxTotalDDPercent / 100.0) {
+        PrintFormat("[CP] Total MAX LOSS >= %.2f%% from base: blocking new entries (base=%.2f)",
+                    MaxTotalDDPercent, base);
         return false;
       }
       return true;
@@ -36055,9 +38714,10 @@ bool CalcLiquidityLevels(int lb, double &erlHi, double &erlLo, double &irlHi, do
                                               double level = base + i * atr;
                                               string name = "GRID_LVL_" +
    IntegerToString(i);
-                                              DrawHLineNamed(name, level,
-   i > 0 ? clrLime
-   : clrRed);
+                                              // DrawHLineNamed expects (..., string label);
+                                              // colour is set via ObjectSet at draw time. Pass
+                                              // empty label to satisfy the modern signature.
+                                              DrawHLineNamed(name, level, "");
                                             }
                                           }
 
@@ -36665,7 +39325,7 @@ bool _GetIndicatorBool(string key)
       if (key == "OBV")
         return OBV;
       if (key == "PivotPoints")
-        return PivotPoints;
+        return GetAdaptive_PivotsEnabled();   // FASE 7 (Patch 5)
       if (key == "PriceAction")
         return PriceAction;
       if (key == "QQE")
@@ -37003,7 +39663,9 @@ int CheckExtendedIndicators(string sym, int tf, int opType, double &totalConfide
         confSum += conf;
         enabledCount++;
       }
-      if (PivotPoints) {
+      // FASE 7 (Patch 5): PivotPoints variabile sostituita da
+      // GetAdaptive_PivotsEnabled() (intraday-only).
+      if (GetAdaptive_PivotsEnabled()) {
         sig = Check_PivotPoints(sym, tf, conf);
         signalSum += sig;
         confSum += conf;
@@ -37500,9 +40162,10 @@ double GetConfidenceFromAI() {
                                             double rsi =
                                                 iRSI(Symbol(), Period(), 14,
                                                      PRICE_CLOSE, 1);
-                                            if (rsi > 70)
+                                            // FASE 7 (Patch 5): adaptive
+                                            if (rsi > GetAdaptive_RSI_OB())
                                               return -1;
-                                            if (rsi < 30)
+                                            if (rsi < GetAdaptive_RSI_OS())
                                               return 1;
                                             return 0;
                                           }
@@ -37640,7 +40303,7 @@ double GetConfidenceFromAI() {
                                                 iADX(Symbol(), Period(), 14,
                                                      PRICE_CLOSE, MODE_MAIN, 1);
                                             return MathMin(100.0,
-                                                           base + ((adx > 25)
+                                                           base + ((adx > (double)GetAdaptive_ADX_Trend())
    ? 10.0
    : 0.0));
                                           }
@@ -37658,9 +40321,11 @@ double GetConfidenceFromAI() {
                                             double rsi =
                                                 iRSI(Symbol(), Period(), 14,
                                                      PRICE_CLOSE, 1);
+                                            int rsi_os = GetAdaptive_RSI_Extreme_OS();
+                                            int rsi_ob = GetAdaptive_RSI_Extreme_OB();
                                             return MathMin(
                                                 100.0,
-                                                base + ((rsi < 25 || rsi > 75)
+                                                base + ((rsi < rsi_os || rsi > rsi_ob)
    ? 15.0
    : 0.0));
                                           }
@@ -37774,7 +40439,7 @@ double GetConfidenceFromAI() {
    "";
    int dir =
    0; // neutro; se necessario, la logica di direzione puÃƒÃ†ÃƒÃ‚Â² essere inserita qui
-   int sc = Indicators_GetScore0_100(
+   int sc = (int)Indicators_GetScore0_100(
    Symbol(),
    PERIOD_CURRENT,
    GetPendingSignalDir(),
@@ -39418,7 +42083,8 @@ int EB_BarsForWindowTF(){
    if (aiDir > 0)
       ExecuteBuy(DynamicLotSize(), Bid - atr * 2.0, Bid + atr * 3.0, "AI_Generic_Bull", PredictedMagic);
    else
-      ExecuteSell(DynamicLotSize(), Ask + atr * 2.0, Ask - atr * 3.0, "AI_Generic_Bear", PredictedMagic);
+      // ExecuteSell signature: (double lot, double sl, double tp, int magic = 0, string comment = "")
+      ExecuteSell(DynamicLotSize(), Ask + atr * 2.0, Ask - atr * 3.0, PredictedMagic, "AI_Generic_Bear");
    }
 
    void DispatchPredictedStrategy() {
@@ -39681,7 +42347,33 @@ int Setup_Register(string ownerStrategy, int dir, double htfBias,
    g_active_setups[idx].burst_count        = 0;
    g_active_setups[idx].addon_count        = 0;
    g_active_setups[idx].is_valid           = true;
+   // FASE 2 - Pending Lifecycle init
+   g_active_setups[idx].pending_ticket     = 0;
+   g_active_setups[idx].pending_price      = 0.0;
+   g_active_setups[idx].pending_sl         = 0.0;
+   g_active_setups[idx].pending_tp         = 0.0;
+   g_active_setups[idx].detect_time        = TimeCurrent();
+   g_active_setups[idx].last_reprice_time  = 0;
+   g_active_setups[idx].reprice_count      = 0;
+   g_active_setups[idx].atr_at_create      = iATR(Symbol(), Period(), 14, 1);
+   g_active_setups[idx].is_mini            = (Period() <= PERIOD_M5);
    return g_active_setups[idx].setup_id;
+}
+
+// FASE 2 - aggancia un pending ticket gia' piazzato al setup.
+// Va chiamato subito dopo SafeOrderSend OP_BUYLIMIT/OP_SELLLIMIT
+// nel flow owner FVG/SMC/ICT/Reverse/Breakout.
+void Setup_AttachPending(int setupId, int ticket, double price, double sl, double tp) {
+   if (ticket <= 0) return;
+   for (int i = 0; i < g_active_setup_count; i++) {
+      if (g_active_setups[i].setup_id == setupId) {
+         g_active_setups[i].pending_ticket = ticket;
+         g_active_setups[i].pending_price  = price;
+         g_active_setups[i].pending_sl     = sl;
+         g_active_setups[i].pending_tp     = tp;
+         return;
+      }
+   }
 }
 
 void Setup_Invalidate(int setupId) {
@@ -39745,65 +42437,1278 @@ int FVG_GetAddOnLevels(string sym, int tf, int dir, double fvgHigh, double fvgLo
 // NOTE: MaxGridLevels governs Grid strategy maximum open levels. For FVG/SMC, burst is capped at 3.
 
 // ============================================================
+// PATCH A/C/D/E - ATTACH GRACE + UNIFIED SYMBOL BUDGET
+// ============================================================
+// Risolve la root cause del "trade casuale su attach":
+//   - g_ea_attachTime: timestamp init dell'EA;
+//   - EA_InAttachGracePeriod(): true per i primi 60s dopo init
+//     -> blocca SOLO market fallback, NON i pending LIMIT.
+//   - OwnerSymbolBudget_CanDeploy(strat): conta TUTTI i market +
+//     pending dei magic FVG/SMC/ICT/Reverse/Breakout sul symbol
+//     corrente e blocca se count >= MaxRiskForSymbol. Esclude
+//     Grid (logica basket/levels separata) e Predicted (hub-driven).
+//   - Owner_HasPendingNearPrice: anti-spam per setup ripetuti vicini.
+//
+// Semantica MaxRiskForSymbol (input double 3.0) per le 5 owner:
+//   = max NUMERO deployment simultanei (market + pending + add-on)
+//     condiviso tra FVG/SMC/ICT/Reverse/Breakout sul symbol.
+// MaxRiskTradePercent resta separato: rischio monetario per trade
+// (Risk_ClampLotToMaxRisk).
+// ============================================================
+
+datetime g_ea_attachTime = 0;
+int      g_ea_attach_grace_sec = 60;
+
+bool EA_InAttachGracePeriod() {
+   if (g_ea_attachTime == 0) return false;
+   return (TimeCurrent() - g_ea_attachTime < g_ea_attach_grace_sec);
+}
+
+bool Owner_IsNonGridPredictedMagic(int magic) {
+   return (magic == FVGMagic    || magic == SMCMagic   ||
+           magic == ICTMagic    || magic == ReverseMagic ||
+           magic == BreakoutMagic);
+}
+
+int OwnerSymbolBudget_CountAll() {
+   // Conta open (market) + pending limit/stop sul symbol corrente
+   // per i magic FVG/SMC/ICT/Reverse/Breakout (esclude Grid/Predicted).
+   int n = 0;
+   for (int i = OrdersTotal() - 1; i >= 0; i--) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if (OrderSymbol() != Symbol()) continue;
+      if (!Owner_IsNonGridPredictedMagic(OrderMagicNumber())) continue;
+      n++;
+   }
+   return n;
+}
+
+bool OwnerSymbolBudget_CanDeploy(string strat) {
+   // PATCH D + FASE 7: MaxRiskForSymbol = max deployment count per
+   // symbol tra le 5 owner non-grid/non-predicted, modulato dal Mode
+   // (Conservative -1 / Aggressive +2).
+   int cap = Mode_MaxDeploymentsOverride();
+   int cur = OwnerSymbolBudget_CountAll();
+   if (cur >= cap) {
+      static datetime __budget_lastLog = 0;
+      if (TimeCurrent() - __budget_lastLog > 30) {
+         __budget_lastLog = TimeCurrent();
+         PrintFormat("[Budget] %s blocked: deployment count=%d >= MaxRiskForSymbol=%d",
+                     strat, cur, cap);
+      }
+      return false;
+   }
+   return true;
+}
+
+bool Owner_HasPendingNearPrice(int magic, double price, double atrTol) {
+   // Anti-spam ESTESO (FASE 1 NEW): controlla sia pending sia trade
+   // LIVE (OP_BUY/OP_SELL) dello stesso magic. Senza questo, dopo
+   // il fill il pending sparisce e il sistema crea un duplicate
+   // staged "near" -> cluster di entry sulla stessa zona.
+   for (int i = OrdersTotal() - 1; i >= 0; i--) {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if (OrderSymbol() != Symbol()) continue;
+      if (OrderMagicNumber() != magic) continue;
+      int ot = OrderType();
+      // Include OP_BUY, OP_SELL, OP_BUYLIMIT, OP_SELLLIMIT, OP_BUYSTOP, OP_SELLSTOP
+      if (ot > OP_SELLSTOP) continue;             // skip solo tipi sconosciuti
+      double cmpPrice = (ot == OP_BUY || ot == OP_SELL)
+                        ? OrderOpenPrice()        // trade live: entry effettiva
+                        : OrderOpenPrice();       // pending: prezzo target
+      if (MathAbs(cmpPrice - price) < atrTol) return true;
+   }
+   return false;
+}
+
+bool Owner_PriceInsideZoneOnFirstScan(int dir, double zoneTop, double zoneBot) {
+   // PATCH C: durante grace period, se il prezzo e' GIA' dentro la
+   // zona del POI, NON aprire market. Si attende uscita + nuovo retest
+   // tramite il LIMIT pendente (che ha expiry e si auto-pulisce).
+   if (!EA_InAttachGracePeriod()) return false;
+   double px = (dir == 1 ? Ask : Bid);
+   return (px >= zoneBot && px <= zoneTop);
+}
+
+// ============================================================
+// PATCH 16+18 - HYBRID ENTRY ZONE + CRYPTO-AWARE ADAPTATION
+// ============================================================
+// Centralizza la scelta di:
+//   - distanza entry-limit dal current price (in ATR)
+//   - buffer SL dietro il POI (in ATR)
+//   - expiry del pending (secondi)
+//   - scelta zona FVG tra proximal/CE/distal
+//   - lotto add-on coerente
+// in funzione di:
+//   - classe asset (Hyb_SymbolClass: FX/METAL/INDEX/CRYPTO)
+//   - hybrid model id corrente (g_hyb_model_id)
+//   - hybrid quality per strategia (Hybrid_QualityFor)
+//   - volatilita' live (iATR ratio)
+// ============================================================
+
+// ============================================================
+// FASE 3 - TIMEFRAME COMPRESSION FACTOR (M5/TF bassi)
+// ============================================================
+// Su M5 i pending LIMIT con distanza 0.30..0.80 ATR rischiavano
+// di essere troppo lontani (M5 ATR x 0.80 = decine di pip su BTC).
+// Hyb_TF_Scale comprime la distanza sui TF bassi e la espande
+// sui TF alti, mantenendo coerenza tra ATR e zona valida:
+//   M1  -> 0.40x  (molto stretto)
+//   M5  -> 0.55x  (stretto-moderato)
+//   M15 -> 0.75x
+//   M30 -> 0.90x
+//   H1  -> 1.00x  (default)
+//   H4  -> 1.15x
+//   D1+ -> 1.30x
+double Hyb_TF_Scale() {
+   int p = Period();
+   if (p <= PERIOD_M1)  return 0.40;
+   if (p <= PERIOD_M5)  return 0.55;
+   if (p <= PERIOD_M15) return 0.75;
+   if (p <= PERIOD_M30) return 0.90;
+   if (p <= PERIOD_H1)  return 1.00;
+   if (p <= PERIOD_H4)  return 1.15;
+   return 1.30;
+}
+
+// Expiry scaling per TF: M5 deve auto-cancellarsi prima
+// (max 30-60min), TF alti possono restare ore-giorni.
+double Hyb_TF_ExpiryScale() {
+   int p = Period();
+   if (p <= PERIOD_M5)  return 0.20;   // 4h * 0.20 = ~48min
+   if (p <= PERIOD_M15) return 0.40;   // 4h * 0.40 = ~96min
+   if (p <= PERIOD_M30) return 0.60;
+   if (p <= PERIOD_H1)  return 1.00;
+   if (p <= PERIOD_H4)  return 1.50;
+   return 2.00;
+}
+
+// ============================================================
+// FASE 7 - MODE PROFILES OPERATIVI (non solo cosmetici)
+// ============================================================
+// Conservative / Moderate / Aggressive non sono piu' solo
+// ModeScale 0.90/1.00/1.15. Ora ogni Mode controlla davvero:
+//   - quality floor (skip setup sotto soglia)
+//   - max deployment count per symbol (override MaxRiskForSymbol)
+//   - add-on permission (Conservative: solo se quality alta)
+//   - market fallback permission
+//   - lot multiplier (rischio scalato)
+//   - expiry multiplier (Conservative pending piu' corti)
+//   - entry distance multiplier (Aggressive pi piu' aggressivo)
+// ============================================================
+
+double Mode_QualityFloor() {
+   // Quality minima richiesta per accettare il setup
+   if (Mode == Conservative) return 65.0;
+   if (Mode == Aggressive)   return 40.0;
+   return 50.0;
+}
+
+int Mode_MaxDeploymentsOverride() {
+   // Override count cap (Aggressive aumenta, Conservative diminuisce)
+   int base = (int)MathMax(1, MathFloor(MaxRiskForSymbol));
+   if (Mode == Conservative) return MathMax(1, base - 1);
+   if (Mode == Aggressive)   return base + 2;
+   return base;
+}
+
+bool Mode_AddOnAllowed(double quality) {
+   // Conservative: add-on solo su setup forti
+   if (Mode == Conservative) return (quality >= 70.0);
+   if (Mode == Aggressive)   return true;
+   return (quality >= 50.0);
+}
+
+bool Mode_AllowMarketFallback() {
+   // Conservative: NIENTE market fallback (solo pending)
+   // Moderate: market fallback consentito con grace
+   // Aggressive: market fallback piu' permissivo
+   if (Mode == Conservative) return false;
+   return true;
+}
+
+double Mode_LotMultiplier() {
+   if (Mode == Conservative) return 0.70;
+   if (Mode == Aggressive)   return 1.30;
+   return 1.00;
+}
+
+double Mode_ExpiryMultiplier() {
+   if (Mode == Conservative) return 0.70;   // pending piu' corti
+   if (Mode == Aggressive)   return 1.30;
+   return 1.00;
+}
+
+double Mode_EntryDistanceMultiplier() {
+   if (Mode == Conservative) return 1.15;   // attende retracement maggiore
+   if (Mode == Aggressive)   return 0.85;   // entra prima
+   return 1.00;
+}
+
+// ============================================================
+// FASE 2 + FASE 10 - Mode-aware PENDING LIFECYCLE helpers
+// ============================================================
+// Min interval (in secondi) tra due OrderModify dello stesso pending.
+// Conservative non vuole "inseguire", Aggressive aggiorna piu' spesso.
+// FASE 6 - TF-scaled: M5 (~ 0.55x) reagisce piu' rapido a micro
+// strutture, H1+ resta stabile.
+int Mode_PendingMinRepriceIntervalSec() {
+   int base;
+   if      (Mode == Conservative) base = 120;
+   else if (Mode == Aggressive)   base = 30;
+   else                            base = 60;
+   double v = base * Hyb_TF_Scale();
+   if (v < 15) v = 15;     // floor minimo 15s (no spam OrderModify)
+   return (int)MathRound(v);
+}
+// Max numero di OrderModify per singolo pending principale prima
+// che il sistema decida di CANCEL/REPLACE (no infinite chase).
+int Mode_PendingMaxReprice() {
+   if (Mode == Conservative) return 1;
+   if (Mode == Aggressive)   return 4;
+   return 2;
+}
+// Move tolerance in frazione di ATR: il pending viene modificato
+// solo se |new_entry - pending_price| > tolerance * ATR.
+double Mode_PendingMoveToleranceATR() {
+   if (Mode == Conservative) return 0.35;
+   if (Mode == Aggressive)   return 0.15;
+   return 0.22;
+}
+// No-chase guard: se |current_price - new_entry| < no_chase_k * ATR
+// il setup e' troppo vicino/passato -> niente reprice (no chasing).
+// Conservative pi rigoroso, Aggressive un po' pi tollerante.
+double Mode_NoChaseAtrK() {
+   if (Mode == Conservative) return 0.40;
+   if (Mode == Aggressive)   return 0.90;
+   return 0.60;
+}
+// Expiry massimo per pending (in secondi) prima di forzare EXPIRE
+// se il pending non si e' mai riempito. Conservative cancella prima.
+int Mode_PendingHardExpirySec() {
+   if (Mode == Conservative) return 1800;   // 30 min
+   if (Mode == Aggressive)   return 5400;   // 90 min
+   return 3600;                              // 60 min
+}
+
+// ============================================================
+// FASE 13 - STAGING MODE HELPERS (Conservative/Mod/Aggressive)
+// ============================================================
+// FASE 1 NEW (event-driven shift) - questo cooldown e' SOLO un
+// anti-burst puro (impedisce di chiamare la stessa Strategy_*_Logic
+// 10 volte nello stesso secondo). NON e' piu' il driver delle
+// aperture: il driver e' il new-bar / wick evolution.
+// Valori molto bassi: 6-15s.
+//   - Aggressive M1: 15 * 0.40 * 0.60 = ~4s (clamp 5s)
+//   - Moderate  M1: 15 * 0.40 * 1.00 = ~6s
+//   - Conservative M1: 15 * 0.40 * 1.50 = ~9s
+int Mode_MinSecondsBetweenStaged() {
+   int base = 15;
+   double modeMul = (Mode == Conservative ? 1.50 :
+                    (Mode == Aggressive   ? 0.60 : 1.00));
+   double v = base * Hyb_TF_Scale() * modeMul;
+   if (v < 5) v = 5;
+   return (int)MathRound(v);
+}
+
+// Min secondi di "drawn hold" prima che il setup diventi
+// PENDING_ELIGIBLE (cioe' venga davvero piazzato il LIMIT).
+// Conservative attende piu' a lungo per confermare il trend.
+// FASE 6: TF-aware - su M5 la conferma deve essere piu' rapida
+// per non perdere il timing dei mini setup (Moderate M5 ~22s vs
+// 45s baseline H1).
+int Mode_StagingMinHoldSec() {
+   int base;
+   if      (Mode == Conservative) base = 90;
+   else if (Mode == Aggressive)   base = 20;
+   else                            base = 45;
+   double scale = Hyb_TF_Scale();   // M5=0.55, M1=0.40, M15=0.75 ...
+   int v = (int)MathRound(base * scale);
+   if (v < 10) v = 10;
+   return v;
+}
+// Confirmation strictness 0..2:
+//   0 = solo invalidation + freshness (Aggressive)
+//   1 = + hybrid bias soft check (Moderate)
+//   2 = + cancel_signal extra check (Conservative)
+int Mode_StagingConfirmStrictness() {
+   if (Mode == Conservative) return 2;
+   if (Mode == Aggressive)   return 0;
+   return 1;
+}
+// Max secondi di vita di un setup staged prima di scartarlo
+// se non e' mai stato confermato. FASE 6 - TF-scaled: su M5 i
+// setup devono "scadere" prima per far spazio a nuovi mini setup.
+int Mode_StagingMaxAgeSec() {
+   int base;
+   if      (Mode == Conservative) base = 600;     // 10 min
+   else if (Mode == Aggressive)   base = 1800;    // 30 min
+   else                            base = 1200;    // 20 min
+   double scale = MathMax(0.40, Hyb_TF_Scale());  // M5 ~ 0.55, M1 ~ 0.40
+   int v = (int)MathRound(base * scale);
+   if (v < 180) v = 180;                          // floor 3 min minimo
+   return v;
+}
+
+// ============================================================
+// FASE 2-5 - STAGING MODEL: il sistema vede / disegna /
+// conferma / deploya. Le strategie owner NON piazzano piu'
+// SafeOrderSend immediato: chiamano Staging_Submit con il
+// payload completo e gli stati interni gestiscono il timing
+// del deploy reale.
+//
+// Stati:
+//   STG_DETECTED         -> appena visto (drawn + waiting hold)
+//   STG_DRAWN            -> overlay projected su chart
+//   STG_PENDING_ELIGIBLE -> conferma passata, prossimo tick deploy
+//   STG_DEPLOYED         -> SafeOrderSend riuscito, pending vivo
+//   STG_INVALIDATED      -> annullato (cleanup)
+//   STG_EXPIRED          -> scaduto senza confirma (cleanup)
+//
+// Esclude esplicitamente Predicted (hub-driven).
+// ============================================================
+#define STG_DETECTED          0
+#define STG_DRAWN             1
+#define STG_PENDING_ELIGIBLE  2
+#define STG_DEPLOYED          3
+#define STG_INVALIDATED       4
+#define STG_EXPIRED           5
+
+struct StagedSetup {
+   int      stg_id;
+   string   owner;
+   int      dir;
+   double   entry_proj;
+   double   sl_proj;
+   double   tp1_proj;
+   double   tp2_proj;
+   double   tp3_proj;
+   double   tpmax_proj;
+   double   invalidation;
+   double   lots;
+   int      magic;
+   string   comment;
+   color    clr;
+   int      expirySec;
+   double   quality;
+   double   atr_at_detect;
+   datetime detect_time;
+   datetime last_check;
+   int      state;
+   int      pending_ticket;
+   int      parent_setup_id;
+   bool     is_mini;
+};
+
+StagedSetup g_staged[40];
+int         g_staged_count   = 0;
+int         g_next_staged_id = 100000;
+
+// ---------- drawing helpers ----------
+void Staging_DrawProjected(int idx) {
+   if (idx < 0 || idx >= g_staged_count) return;
+   string p     = StringFormat("OBL_STG_%d_", g_staged[idx].stg_id);
+   string owner = g_staged[idx].owner;
+   // FASE 2/3 - projected = palette tenue + label visibili PULITI
+   // (niente #id tecnico, no _STG, no numeri interni).
+   if (g_staged[idx].entry_proj > 0)
+      OBL_DrawLevel(p + "ENTRY", g_staged[idx].entry_proj,
+                    OBL_PAL_ENTRY_LIMIT, STYLE_DASHDOT,
+                    owner + " Entry (planned)", 8);
+   if (g_staged[idx].sl_proj > 0)
+      OBL_DrawLevel(p + "SL",  g_staged[idx].sl_proj,
+                    OBL_PAL_SL, STYLE_DOT,
+                    owner + " SL (planned)", 7);
+   if (g_staged[idx].tp1_proj > 0)
+      OBL_DrawLevel(p + "TP1", g_staged[idx].tp1_proj,
+                    OBL_PAL_TP1, STYLE_DOT, owner + " TP1 (planned)", 7);
+   if (g_staged[idx].tp2_proj > 0)
+      OBL_DrawLevel(p + "TP2", g_staged[idx].tp2_proj,
+                    OBL_PAL_TP2, STYLE_DOT, owner + " TP2 (planned)", 7);
+   if (g_staged[idx].tp3_proj > 0)
+      OBL_DrawLevel(p + "TP3", g_staged[idx].tp3_proj,
+                    OBL_PAL_TP3, STYLE_DOT, owner + " TP3 (planned)", 7);
+   if (g_staged[idx].tpmax_proj > 0)
+      OBL_DrawLevel(p + "TPMAX", g_staged[idx].tpmax_proj,
+                    OBL_PAL_TPMAX, STYLE_DOT, owner + " TPMAX (planned)", 7);
+   if (g_staged[idx].invalidation > 0)
+      OBL_DrawLevel(p + "INV", g_staged[idx].invalidation,
+                    OBL_PAL_INVALIDATION, STYLE_DASHDOTDOT,
+                    owner + " Invalidation", 7);
+}
+
+void Staging_CleanupObjects(int idx) {
+   if (idx < 0 || idx >= g_staged_count) return;
+   string prefix = StringFormat("OBL_STG_%d_", g_staged[idx].stg_id);
+   int total = ObjectsTotal(0, -1, -1);
+   for (int i = total - 1; i >= 0; i--) {
+      string nm = ObjectName(0, i);
+      if (StringFind(nm, prefix) == 0) ObjectDelete(0, nm);
+   }
+}
+
+// ---------- TP ladder projection helper ----------
+// Costruisce TP1/2/3/MAX projected da entry+sl con multipli
+// adaptive (asset+mode). NON sostituisce TPSL_ComputeLevels
+// post-deploy: serve solo per dare un'idea visiva sul chart.
+void Staging_ComputeProjectedTPs(int dir, double entry, double sl,
+                                  double &tp1, double &tp2, double &tp3, double &tpm) {
+   double risk = MathAbs(entry - sl);
+   if (risk <= 0) { tp1 = tp2 = tp3 = tpm = 0; return; }
+   double m1 = 1.0, m2 = 2.0, m3 = 3.0, mm = 5.0;
+   if (Mode == Aggressive)      { m1 = 0.8; m2 = 1.5; m3 = 2.5; mm = 4.0; }
+   else if (Mode == Conservative) { m1 = 1.2; m2 = 2.5; m3 = 4.0; mm = 6.0; }
+   if (dir == 1) {
+      tp1 = entry + risk * m1;
+      tp2 = entry + risk * m2;
+      tp3 = entry + risk * m3;
+      tpm = entry + risk * mm;
+   } else {
+      tp1 = entry - risk * m1;
+      tp2 = entry - risk * m2;
+      tp3 = entry - risk * m3;
+      tpm = entry - risk * mm;
+   }
+}
+
+// ---------- submission ----------
+// Le strategy owner chiamano questa funzione invece di
+// SafeOrderSend diretto. Lo staging gestisce il timing.
+// Ritorna lo stg_id se accettato, -1 se rifiutato.
+// FASE 1 NEW - same_owner_same_side_cooldown (anti-spam temporale)
+// Per ogni (owner, dir) il sistema accetta un nuovo staged
+// solo se sono passati >= COOLDOWN_SEC dall'ultima submission.
+// Evita "10 FVG_v2 buy in 30 secondi" anche su zone leggermente
+// diverse. Mode-aware + TF-scaled.
+//
+// Mapping: 5 owner x 2 side = 10 slot
+//   FVG buy=0 sell=1 | SMC buy=2 sell=3 | ICT buy=4 sell=5
+//   Reverse buy=6 sell=7 | Breakout buy=8 sell=9
+datetime g_stagingLastSubmitAt[10];
+
+int Staging_CooldownSlot(string owner, int dir) {
+   int base = -1;
+   if      (owner == "FVG")      base = 0;
+   else if (owner == "SMC")      base = 2;
+   else if (owner == "ICT")      base = 4;
+   else if (owner == "Reverse")  base = 6;
+   else if (owner == "Breakout") base = 8;
+   if (base < 0) return -1;
+   return base + (dir == 1 ? 0 : 1);
+}
+
+int Staging_CooldownSec() {
+   int base;
+   if      (Mode == Conservative) base = 240;   // 4 min
+   else if (Mode == Aggressive)   base = 45;
+   else                            base = 90;
+   double v = base * Hyb_TF_Scale();
+   if (v < 20) v = 20;       // floor 20s anche su M1
+   return (int)MathRound(v);
+}
+
+int Staging_Submit(string owner, int dir, double entryProj, double slProj,
+                   double lots, int magic, string comment, int expirySec,
+                   color clr, double quality, double invalidation,
+                   double atrNow) {
+   if (g_staged_count >= 40) {
+      Print("[Staging] FULL - cannot accept new setup");
+      return -1;
+   }
+   // FASE 1 NEW - cooldown owner+side
+   int cdSlot = Staging_CooldownSlot(owner, dir);
+   if (cdSlot >= 0 && g_stagingLastSubmitAt[cdSlot] > 0) {
+      int cdSec = Staging_CooldownSec();
+      int dt = (int)(TimeCurrent() - g_stagingLastSubmitAt[cdSlot]);
+      if (dt < cdSec) {
+         PrintFormat("[Staging] COOLDOWN %s dir=%d dt=%ds < %ds - skip",
+                     owner, dir, dt, cdSec);
+         return -1;
+      }
+   }
+   // FASE 1+10+5(NEW) - DOMINANT SETUP enforcement con
+   // REPLACE_IF_SUPERIOR per (symbol+owner+dir).
+   //   1) Dedup staged DRAWN/PENDING_ELIGIBLE/DEPLOYED entro 0.3 ATR
+   //      stesso owner+dir:
+   //      - se NEW quality >= 1.20x OLD e NEW >= 60   -> SUPERIOR
+   //        REPLACE: invalidate vecchio + accetta nuovo
+   //      - altrimenti DEDUP (skip)
+   //   2) Dedup vs g_active_setups con pending_ticket vivo:
+   //      - se NEW quality >= 1.25x OLD quality stimata (>= 60) e il
+   //        pending NON e' in LOCKED_FOR_FILL -> SUPERIOR REPLACE:
+   //        OrderDelete vecchio + accetta nuovo
+   //      - altrimenti DEDUP
+   double dupThr = 0.30;
+   double SUP_RATIO_STG = 1.20;
+   double SUP_RATIO_DEP = 1.25;
+   double SUP_MIN_Q     = 60.0;
+   if (atrNow > 0) {
+      for (int i = 0; i < g_staged_count; i++) {
+         if (g_staged[i].state == STG_INVALIDATED ||
+             g_staged[i].state == STG_EXPIRED)         continue;
+         if (g_staged[i].owner != owner)               continue;
+         if (g_staged[i].dir   != dir)                 continue;
+         if (MathAbs(g_staged[i].entry_proj - entryProj) < dupThr * atrNow) {
+            double oldQ = g_staged[i].quality;
+            bool superior = (quality >= SUP_MIN_Q &&
+                             oldQ > 0 &&
+                             quality >= oldQ * SUP_RATIO_STG);
+            if (!superior) {
+               PrintFormat("[Staging] DEDUP staged %s dir=%d same zone (stg#%d qOld=%.1f qNew=%.1f)",
+                           owner, dir, g_staged[i].stg_id, oldQ, quality);
+               return -1;
+            }
+            // SUPERIOR REPLACE: invalida vecchio (Staging_Tick fara' cleanup)
+            PrintFormat("[Staging] SUPERIOR_REPLACE staged %s dir=%d stg#%d qOld=%.1f -> qNew=%.1f",
+                        owner, dir, g_staged[i].stg_id, oldQ, quality);
+            g_staged[i].state = STG_INVALIDATED;
+         }
+      }
+      for (int j = 0; j < g_active_setup_count; j++) {
+         if (!g_active_setups[j].is_valid)             continue;
+         if (g_active_setups[j].pending_ticket <= 0)   continue;
+         if (g_active_setups[j].owner_strategy != owner) continue;
+         if (g_active_setups[j].direction != dir)      continue;
+         if (MathAbs(g_active_setups[j].pending_price - entryProj) < dupThr * atrNow) {
+            int tkt = g_active_setups[j].pending_ticket;
+            // Niente REPLACE se il pending e' LOCKED (fill imminente)
+            double cur = (dir == 1) ? Ask : Bid;
+            bool locked = (MathAbs(g_active_setups[j].pending_price - cur) <= 0.35 * atrNow);
+            // Old quality non e' memorizzata su ParentSetup -> usa setup_score (0-100)
+            double oldQ = (double)g_active_setups[j].setup_score;
+            bool superior = (!locked &&
+                             quality >= SUP_MIN_Q &&
+                             oldQ > 0 &&
+                             quality >= oldQ * SUP_RATIO_DEP);
+            if (!superior) {
+               PrintFormat("[Staging] DEDUP deployed %s dir=%d same zone (setup#%d tkt=%d locked=%d qOld=%.1f qNew=%.1f)",
+                           owner, dir, g_active_setups[j].setup_id,
+                           tkt, (int)locked, oldQ, quality);
+               return -1;
+            }
+            // SUPERIOR REPLACE: cancella pending + invalida setup
+            if (OrderSelect(tkt, SELECT_BY_TICKET) && OrderType() > OP_SELL) {
+               if (OrderDelete(tkt)) {
+                  PrintFormat("[Staging] SUPERIOR_REPLACE deployed %s dir=%d setup#%d tkt=%d qOld=%.1f -> qNew=%.1f",
+                              owner, dir, g_active_setups[j].setup_id, tkt, oldQ, quality);
+                  OBL_RemoveTicketObjects(tkt);
+                  g_active_setups[j].pending_ticket = 0;
+                  g_active_setups[j].is_valid = false;
+               }
+            }
+         }
+      }
+      // FASE 1 NEW (FIX cluster FVG_v2 osservato nei log):
+      // Dedup ANCHE vs trade LIVE (g_tpsl_tracks) dello stesso
+      // owner+dir nella stessa zona. Senza questo, dopo che il pending
+      // viene fillato il sistema apriva nuovi staged duplicate sulla
+      // stessa zona FVG -> cluster di trade BUY su EURUSD / SELL su
+      // XAUUSD. NESSUN replace qui (trade gia' live): hard skip.
+      double zoneTol = 0.50 * atrNow;   // piu' largo: include la
+                                         // dispersione del fill broker
+      for (int t = 0; t < g_tpsl_trackCount; t++) {
+         if (g_tpsl_tracks[t].strategy != owner) continue;
+         int   liveDir = (g_tpsl_tracks[t].orderType == OP_BUY ? 1 : -1);
+         if (liveDir != dir)                    continue;
+         double liveEntry = g_tpsl_tracks[t].entryPrice;
+         if (MathAbs(liveEntry - entryProj) < zoneTol) {
+            PrintFormat("[Staging] DEDUP live %s dir=%d same zone (live tkt=%d entry=%.5f new=%.5f tol=%.5f)",
+                        owner, dir, g_tpsl_tracks[t].ticket,
+                        liveEntry, entryProj, zoneTol);
+            return -1;
+         }
+      }
+   }
+   int idx = g_staged_count++;
+   g_staged[idx].stg_id          = g_next_staged_id++;
+   g_staged[idx].owner           = owner;
+   g_staged[idx].dir             = dir;
+   g_staged[idx].entry_proj      = entryProj;
+   g_staged[idx].sl_proj         = slProj;
+   double tp1=0,tp2=0,tp3=0,tpm=0;
+   Staging_ComputeProjectedTPs(dir, entryProj, slProj, tp1, tp2, tp3, tpm);
+   g_staged[idx].tp1_proj        = tp1;
+   g_staged[idx].tp2_proj        = tp2;
+   g_staged[idx].tp3_proj        = tp3;
+   g_staged[idx].tpmax_proj      = tpm;
+   g_staged[idx].invalidation    = invalidation;
+   g_staged[idx].lots            = lots;
+   g_staged[idx].magic           = magic;
+   g_staged[idx].comment         = comment;
+   g_staged[idx].clr             = clr;
+   g_staged[idx].expirySec       = expirySec;
+   g_staged[idx].quality         = quality;
+   g_staged[idx].atr_at_detect   = atrNow;
+   g_staged[idx].detect_time     = TimeCurrent();
+   g_staged[idx].last_check      = 0;
+   g_staged[idx].state           = STG_DRAWN;
+   g_staged[idx].pending_ticket  = 0;
+   g_staged[idx].parent_setup_id = 0;
+   g_staged[idx].is_mini         = (Period() <= PERIOD_M5);
+   Staging_DrawProjected(idx);
+   // Stamp cooldown SOLO al submit accettato (no reset su skip).
+   if (cdSlot >= 0) g_stagingLastSubmitAt[cdSlot] = TimeCurrent();
+   PrintFormat("[Staging] DRAWN %s#%d dir=%d entry=%.5f sl=%.5f q=%.1f",
+               owner, g_staged[idx].stg_id, dir, entryProj, slProj, quality);
+   return g_staged[idx].stg_id;
+}
+
+// FASE 4 - Conferma robusta e contestuale per decidere
+// PENDING_ELIGIBLE. Check cumulativi:
+//   1) min hold time (mode-aware)
+//   2) attach grace period (no deploy nei primi 60s)
+//   3) invalidation non hit
+//   4) sanity: entry dal lato giusto del prezzo
+//   5) freshness: setup non troppo vicino al prezzo (no stale-attach)
+//   6) symbol budget ancora disponibile
+//   7) directional bias hybrid (strict >= 1)
+//   8) no cancel_signal estremo (strict >= 2)
+//   9) Mode quality floor
+bool Staging_TryConfirm(int idx) {
+   if (idx < 0 || idx >= g_staged_count) return false;
+   datetime now = TimeCurrent();
+   // 1) Min hold time mode-aware
+   if (now - g_staged[idx].detect_time < Mode_StagingMinHoldSec()) return false;
+   // 2) Attach grace - non deploy nei primi 60s anche se min hold passato
+   if (EA_InAttachGracePeriod()) return false;
+   double cur = (g_staged[idx].dir == 1) ? Ask : Bid;
+   // 3) Invalidation hit?
+   if (g_staged[idx].invalidation > 0) {
+      bool inv = (g_staged[idx].dir == 1 && cur < g_staged[idx].invalidation) ||
+                 (g_staged[idx].dir == -1 && cur > g_staged[idx].invalidation);
+      if (inv) return false;
+   }
+   // 4) Sanity: entry deve restare dal lato giusto
+   if (g_staged[idx].dir == 1  && g_staged[idx].entry_proj >= cur) return false;
+   if (g_staged[idx].dir == -1 && g_staged[idx].entry_proj <= cur) return false;
+   // 5) Freshness / stale-attach: il prezzo non deve essere gia'
+   // dentro o oltre la entry zone al momento della conferma.
+   double atrNow = iATR(Symbol(), Period(), 14, 1);
+   if (atrNow > 0) {
+      double dist = MathAbs(cur - g_staged[idx].entry_proj);
+      // se il prezzo e' a meno di 0.1 ATR dall'entry, vuol dire
+      // che siamo gia' sul livello: rischio fill immediato non sano.
+      if (dist < 0.10 * atrNow) {
+         static datetime __stg_staleLog = 0;
+         if (now - __stg_staleLog > 60) {
+            __stg_staleLog = now;
+            PrintFormat("[Staging] %s#%d defer confirm - price too close (dist=%.5f atr=%.5f)",
+                        g_staged[idx].owner, g_staged[idx].stg_id, dist, atrNow);
+         }
+         return false;
+      }
+   }
+   // 6) Symbol budget ancora disponibile
+   if (!OwnerSymbolBudget_CanDeploy(g_staged[idx].owner)) return false;
+   // 7+8) Strictness mode-aware
+   int strict = Mode_StagingConfirmStrictness();
+   if (strict >= 1) {
+      int hybBias = Hybrid_RefineBias(0, g_staged[idx].owner);
+      if (g_hyb_confidence >= HybridMinConfidence &&
+          hybBias != 0 && hybBias != g_staged[idx].dir) return false;
+   }
+   if (strict >= 2) {
+      if (g_hyb_cancel_signal) return false;
+   }
+   // 9) Quality floor by mode
+   if (g_staged[idx].quality < Mode_QualityFloor()) return false;
+   return true;
+}
+
+// Esecuzione reale: SafeOrderSend + Setup_Register + Attach.
+// FASE 2 - i pending staged non-Predicted NON portano SL/TP broker:
+// SL/TP sono interni (g_staged + g_tpsl_tracks) e visualizzati sul
+// chart. L'attivazione del trade applichera' SL/TP via TPSL manager.
+void Staging_Deploy(int idx) {
+   if (idx < 0 || idx >= g_staged_count) return;
+   int opType = (g_staged[idx].dir == 1) ? OP_BUYLIMIT : OP_SELLLIMIT;
+   datetime exp = TimeCurrent() + g_staged[idx].expirySec;
+   int ticket = SafeOrderSend(Symbol(), opType, g_staged[idx].lots,
+                              NormalizeDouble(g_staged[idx].entry_proj, Digits), 3,
+                              0.0,    // SL broker = 0 (gestione interna)
+                              0.0,    // TP broker = 0 (gestione interna)
+                              g_staged[idx].comment, g_staged[idx].magic,
+                              exp, g_staged[idx].clr);
+   if (ticket <= 0) {
+      PrintFormat("[Staging] DEPLOY FAIL %s#%d err=%d - mark INVALIDATED",
+                  g_staged[idx].owner, g_staged[idx].stg_id, GetLastError());
+      g_staged[idx].state = STG_INVALIDATED;
+      Staging_CleanupObjects(idx);
+      return;
+   }
+   // Registra setup parent + aggancia pending al lifecycle mgr.
+   int parentId = Setup_Register(g_staged[idx].owner, g_staged[idx].dir,
+                                 g_staged[idx].entry_proj,
+                                 g_staged[idx].invalidation,
+                                 1.0, (int)g_staged[idx].quality,
+                                 g_staged[idx].entry_proj);
+   Setup_AttachPending(parentId, ticket, g_staged[idx].entry_proj,
+                       g_staged[idx].sl_proj, 0);
+   OwnerRegistry_Register(ticket, g_staged[idx].owner, g_staged[idx].owner,
+                          g_staged[idx].magic, "STAGED_PRIMARY_LIMIT",
+                          g_staged[idx].quality, "standard");
+   g_staged[idx].pending_ticket  = ticket;
+   g_staged[idx].parent_setup_id = parentId;
+   g_staged[idx].state           = STG_DEPLOYED;
+   // FASE 1+10 NEW (event-driven coerenza) - aggiorna anche il
+   // lastTradeTime_<owner> per IsStrategyCoolingDown legacy, cosi'
+   // i path ExecuteStrategy (Breakout/Reverse/Grid) non aprono
+   // duplicati ignorando il deploy staged appena fatto.
+   UpdateLastTradeTime(g_staged[idx].owner);
+   PrintFormat("[Staging] DEPLOYED %s#%d tkt=%d entry=%.5f sl=%.5f",
+               g_staged[idx].owner, g_staged[idx].stg_id, ticket,
+               g_staged[idx].entry_proj, g_staged[idx].sl_proj);
+   // Cleanup overlay projected: i livelli reali sono ora gestiti
+   // da TpSlOverlay_Update con prefisso OBL_LVL_<ticket>_.
+   Staging_CleanupObjects(idx);
+}
+
+// Tick: chiamato da Orchestrator_OnTimer (1Hz).
+void Staging_Tick() {
+   if (g_staged_count <= 0) return;
+   datetime now = TimeCurrent();
+   for (int i = 0; i < g_staged_count; i++) {
+      // Cleanup expired/invalidated/deployed-old (compatta dopo).
+      if (g_staged[i].state == STG_DEPLOYED ||
+          g_staged[i].state == STG_INVALIDATED ||
+          g_staged[i].state == STG_EXPIRED) continue;
+      // Max age -> EXPIRE.
+      if (now - g_staged[i].detect_time > Mode_StagingMaxAgeSec()) {
+         g_staged[i].state = STG_EXPIRED;
+         Staging_CleanupObjects(i);
+         PrintFormat("[Staging] EXPIRED %s#%d age=%ds",
+                     g_staged[i].owner, g_staged[i].stg_id,
+                     (int)(now - g_staged[i].detect_time));
+         continue;
+      }
+      // Invalidation: prezzo ha rotto il livello dal lato sbagliato.
+      double cur = (g_staged[i].dir == 1) ? Ask : Bid;
+      if (g_staged[i].invalidation > 0) {
+         bool inv = (g_staged[i].dir == 1  && cur < g_staged[i].invalidation) ||
+                    (g_staged[i].dir == -1 && cur > g_staged[i].invalidation);
+         if (inv) {
+            g_staged[i].state = STG_INVALIDATED;
+            Staging_CleanupObjects(i);
+            PrintFormat("[Staging] INVALIDATED %s#%d cur=%.5f inv=%.5f",
+                        g_staged[i].owner, g_staged[i].stg_id, cur,
+                        g_staged[i].invalidation);
+            continue;
+         }
+      }
+      // Confirmation gate
+      if (Staging_TryConfirm(i)) {
+         g_staged[i].state = STG_PENDING_ELIGIBLE;
+         Staging_Deploy(i);    // mette il LIMIT + transiziona a DEPLOYED
+      }
+      g_staged[i].last_check = now;
+   }
+   // Compattazione array (rimuovi DEPLOYED/INVALIDATED/EXPIRED vecchi > 60s)
+   int w = 0;
+   for (int r = 0; r < g_staged_count; r++) {
+      bool drop = (g_staged[r].state == STG_DEPLOYED   && (now - g_staged[r].detect_time) > 60) ||
+                  (g_staged[r].state == STG_INVALIDATED && (now - g_staged[r].detect_time) > 60) ||
+                  (g_staged[r].state == STG_EXPIRED    && (now - g_staged[r].detect_time) > 60);
+      if (!drop) {
+         if (w != r) g_staged[w] = g_staged[r];
+         w++;
+      }
+   }
+   g_staged_count = w;
+}
+
+// ============================================================
+// FASE 4+5 - SETUP THINKING ENGINE (NEW BAR REVALUATION)
+//
+// A ogni nuova candela il sistema:
+//  - decade lentamente la quality dei setup vecchi (favorisce
+//    SUPERIOR_REPLACE quando arrivano setup freschi)
+//  - logga la mappa pensata (DRAWN/ELIGIBLE per owner/dir)
+//  - NON deploya direttamente: questo resta in mano a
+//    Staging_TryConfirm + Staging_Deploy (gia' chiamati ogni
+//    Staging_Tick)
+//
+// Decay quality:
+//   per ogni bar di vita oltre 2 bars  -> -2 quality
+//   floor a Mode_QualityFloor() - 10
+// Cosi' un nuovo setup di quality moderata puo' ancora battere
+// (SUPERIOR_REPLACE) un setup vecchio degradato.
+// ============================================================
+datetime g_staging_lastBar = 0;
+
+void Staging_OnNewBar() {
+   if (g_staged_count <= 0) return;
+   datetime now = TimeCurrent();
+   int periodSec = MathMax(60, Period() * 60);
+   double floorQ = MathMax(10.0, Mode_QualityFloor() - 10.0);
+   int countD = 0, countE = 0;
+   int bullCount = 0, bearCount = 0;
+   for (int i = 0; i < g_staged_count; i++) {
+      if (g_staged[i].state == STG_INVALIDATED ||
+          g_staged[i].state == STG_EXPIRED     ||
+          g_staged[i].state == STG_DEPLOYED) continue;
+      int ageBars = (int)((now - g_staged[i].detect_time) / periodSec);
+      if (ageBars > 2) {
+         double newQ = g_staged[i].quality - 2.0 * (ageBars - 2);
+         if (newQ < floorQ) newQ = floorQ;
+         if (newQ != g_staged[i].quality) {
+            g_staged[i].quality = newQ;
+            Staging_DrawProjected(i);  // refresh label "(planned q=NN)"
+         }
+      }
+      if (g_staged[i].state == STG_DRAWN)            countD++;
+      if (g_staged[i].state == STG_PENDING_ELIGIBLE) countE++;
+      if (g_staged[i].dir == 1)  bullCount++;
+      if (g_staged[i].dir == -1) bearCount++;
+   }
+   PrintFormat("[ThinkEngine] newBar TF=M%d staged=%d (DRAWN=%d ELIG=%d) bias=%dB/%dS qFloor=%.0f",
+               Period(), g_staged_count, countD, countE,
+               bullCount, bearCount, Mode_QualityFloor());
+}
+
+// ============================================================
+// FASE 5 - MINI SETUP M5 helpers (micro-strutture reattive,
+// non versioni fake). Si attivano su TF <= M5.
+// Aggressive abilita anche su M15 con thresholds maturi.
+// ============================================================
+bool Mode_MiniSetupEnabled() {
+   if (Period() <= PERIOD_M5)  return true;
+   if (Mode == Aggressive && Period() <= PERIOD_M15) return true;
+   return false;
+}
+// Min gap (in frazione di ATR) per accettare un FVG.
+// Mini setup usa una soglia piu' stretta (zone piu' piccole).
+double Mini_GetMinGapATR(string owner) {
+   double base = 0.30;                       // forex baseline
+   int cls = Hyb_SymbolClass();
+   if      (cls == HYB_SYM_CRYPTO) base = 0.50;   // crypto richiede gap piu' netti
+   else if (cls == HYB_SYM_METAL)  base = 0.35;
+   else if (cls == HYB_SYM_INDEX)  base = 0.32;
+   if (Mode_MiniSetupEnabled()) base *= 0.65;     // soglia piu' stretta su M5
+   if (Mode == Aggressive)      base *= 0.85;
+   else if (Mode == Conservative) base *= 1.20;
+   return base;
+}
+// Min range/displacement per accettare un breakout/SMC sweep.
+double Mini_GetMinRangeATR(string owner) {
+   double base = 1.0;
+   int cls = Hyb_SymbolClass();
+   if      (cls == HYB_SYM_CRYPTO) base = 1.4;
+   else if (cls == HYB_SYM_METAL)  base = 1.1;
+   else if (cls == HYB_SYM_INDEX)  base = 1.0;
+   if (Mode_MiniSetupEnabled()) base *= 0.70;
+   if (Mode == Aggressive)      base *= 0.90;
+   else if (Mode == Conservative) base *= 1.15;
+   return base;
+}
+// Lookback per swing/structure detection adaptive a TF.
+int Mini_GetSwingLookback(string owner) {
+   if (Period() <= PERIOD_M5)  return 25;
+   if (Period() <= PERIOD_M15) return 35;
+   if (Period() <= PERIOD_H1)  return 50;
+   return 80;
+}
+
+// ============================================================
+// FASE 2+3 - PENDING LIFECYCLE MANAGER (smart adaptive,
+// no chasing, no infinite modify, no stale pending).
+// Decisioni per ogni setup attivo con pending principale:
+//   KEEP    -> niente da fare
+//   MODIFY  -> OrderModify (entry+sl+tp) con throttle e cap
+//   CANCEL  -> OrderDelete (setup invalidato/scaduto/troppo lontano)
+//   REPLACE -> CANCEL + new pending (gestito dal flow owner al
+//              prossimo tick: questo modulo solo CANCEL)
+//   EXPIRE  -> CANCEL per hard timeout
+// Esclude esplicitamente Grid e Predicted.
+// ============================================================
+bool Pending_Lifecycle_IsOwnerManaged(string owner) {
+   return (owner == "FVG"     || owner == "SMC"      ||
+           owner == "ICT"     || owner == "Reverse"  ||
+           owner == "Breakout");
+}
+
+// Ricalcola entry zone per il setup (riusa Hyb_GetEntryDistanceATR).
+// dir=1 -> price - distance, dir=-1 -> price + distance.
+double Pending_RecomputeEntry(string owner, int dir, double poi) {
+   double atr = iATR(Symbol(), Period(), 14, 1);
+   if (atr <= 0) return poi;
+   double dist_atr = Hyb_GetEntryDistanceATR(owner);
+   double cur = (dir == 1) ? Ask : Bid;
+   // Entry zone = blended tra POI originale e cur+/-distance.
+   // Se il POI e' ragionevole rispetto al prezzo corrente, lo prefer;
+   // altrimenti si aggancia a cur +/- distance.
+   double blended_poi = poi;
+   double blended_dist = (dir == 1) ? (cur - dist_atr * atr)
+                                    : (cur + dist_atr * atr);
+   if (poi <= 0) return blended_dist;
+   // Se POI e' lontano > 3 ATR dal prezzo, sostituisci con dist-based:
+   if (MathAbs(poi - cur) > 3.0 * atr) return blended_dist;
+   return blended_poi;
+}
+
+void Pending_Lifecycle_Tick() {
+   if (g_active_setup_count <= 0) return;
+   datetime now = TimeCurrent();
+   double atr_now = iATR(Symbol(), Period(), 14, 1);
+   if (atr_now <= 0) return;
+   double point = MarketInfo(Symbol(), MODE_POINT);
+   if (point <= 0) point = Point;
+
+   for (int i = 0; i < g_active_setup_count; i++) {
+      if (!g_active_setups[i].is_valid)                            continue;
+      if (g_active_setups[i].pending_ticket <= 0)                  continue;
+      string owner = g_active_setups[i].owner_strategy;
+      if (!Pending_Lifecycle_IsOwnerManaged(owner))                continue;
+
+      int ticket = g_active_setups[i].pending_ticket;
+      if (!OrderSelect(ticket, SELECT_BY_TICKET)) {
+         // ticket non esiste piu' (chiuso/eliminato dal broker)
+         OBL_RemoveTicketObjects(ticket);   // FASE 10 - cleanup overlay
+         g_active_setups[i].pending_ticket = 0;
+         continue;
+      }
+      int otype = OrderType();
+      // Live overlay per il PENDING (pre-fill): disegna ENTRY (giallo
+      // live) + SL interno (rosso). Cleanup automatico se ticket
+      // sparisce (OBL_RemoveTicketObjects al fill o cancel).
+      if (otype == OP_BUYLIMIT || otype == OP_SELLLIMIT) {
+         string pfx = StringFormat("OBL_LVL_%d_", ticket);
+         double pendPrice = OrderOpenPrice();
+         double pendSL    = g_active_setups[i].pending_sl;
+         OBL_DrawLevel(pfx + "ENTRY", pendPrice, OBL_PAL_ENTRY_LIVE,
+                       STYLE_SOLID, owner + " ENTRY", 8);
+         if (pendSL > 0)
+            OBL_DrawLevel(pfx + "SL", pendSL, OBL_PAL_SL,
+                          STYLE_DASH, owner + " SL", 8);
+      }
+      // Pending diventato market -> applica SL/TP INTERNI tramite
+      // TPSL_RegisterTrade (no broker SL/TP sul pending originale).
+      if (otype != OP_BUYLIMIT && otype != OP_SELLLIMIT) {
+         int newOtype  = (otype == OP_BUY ? OP_BUY : OP_SELL);
+         double entry  = OrderOpenPrice();
+         double slInt  = g_active_setups[i].pending_sl;
+         // Idempotenza: TPSL_RegisterTrade salta se gia' registrato
+         // (controlla g_tpsl_tracks per ticket esistente).
+         bool already = false;
+         for (int k = 0; k < g_tpsl_trackCount; k++) {
+            if (g_tpsl_tracks[k].ticket == ticket) { already = true; break; }
+         }
+         if (!already && slInt > 0) {
+            TPSL_RegisterTrade(ticket, OrderMagicNumber(), owner,
+                                newOtype, entry, slInt);
+            PrintFormat("[PendingMgr] FILLED setup=%d %s tkt=%d entry=%.5f sl=%.5f - TPSL internal applied",
+                        g_active_setups[i].setup_id, owner, ticket, entry, slInt);
+         }
+         g_active_setups[i].pending_ticket = 0;
+         continue;
+      }
+      // FASE 2 - calcolo "locked" anticipato per proteggere il pending
+      // sia da expiry sia da reprice se il prezzo e' gia' al touch.
+      double cur = (g_active_setups[i].direction == 1) ? Ask : Bid;
+      double pre_touch_zone = 0.35 * atr_now;
+      double pre_dist_touch = MathAbs(OrderOpenPrice() - cur);
+      bool   pre_locked = (pre_dist_touch <= pre_touch_zone);
+
+      // Hard expiry: se il pending vive da troppo tempo senza
+      // trigger -> CANCEL (no stale pending sul book).
+      // FASE 2: bypass se LOCKED_FOR_FILL (fill imminente).
+      int max_age = Mode_PendingHardExpirySec();
+      if (!pre_locked &&
+          g_active_setups[i].detect_time > 0 &&
+          (now - g_active_setups[i].detect_time) > max_age) {
+         if (OrderDelete(ticket)) {
+            PrintFormat("[PendingMgr] EXPIRE setup=%d %s tkt=%d age=%ds",
+                        g_active_setups[i].setup_id, owner, ticket,
+                        (int)(now - g_active_setups[i].detect_time));
+            g_active_setups[i].pending_ticket = 0;
+         }
+         continue;
+      }
+      // Setup invalidato: CANCEL pending residuo.
+      double inv = g_active_setups[i].invalidation_level;
+      if (inv > 0) {
+         bool inv_hit = (g_active_setups[i].direction == 1 && cur < inv) ||
+                        (g_active_setups[i].direction == -1 && cur > inv);
+         if (inv_hit) {
+            if (OrderDelete(ticket)) {
+               PrintFormat("[PendingMgr] CANCEL invalidated setup=%d %s tkt=%d",
+                           g_active_setups[i].setup_id, owner, ticket);
+               OBL_RemoveTicketObjects(ticket);
+               g_active_setups[i].pending_ticket = 0;
+               g_active_setups[i].is_valid = false;
+            }
+            continue;
+         }
+      }
+      // FASE 7 NEW (event-driven cleanup) - cancel se il mercato
+      // ha "saltato" il pending senza mai avvicinarsi al touch.
+      // Definizione: dopo eta' > 5 bar, se il prezzo non e' mai
+      // sceso (per BUYLIMIT) / salito (per SELLLIMIT) a meno di
+      // 1.5 ATR dal pending, il setup e' "skipped from market".
+      int periodSec = MathMax(60, Period() * 60);
+      int ageBars = (int)((now - g_active_setups[i].detect_time) / periodSec);
+      if (ageBars >= 5) {
+         double dist_now = MathAbs(OrderOpenPrice() - cur);
+         // Approssimazione: usiamo dist_to_cur corrente (un setup
+         // sano vede dist scendere col tempo); se > 1.5 ATR per
+         // setup vecchio = market gia' andato altrove.
+         if (dist_now > 1.5 * atr_now) {
+            if (OrderDelete(ticket)) {
+               PrintFormat("[PendingMgr] CANCEL market_skipped setup=%d %s tkt=%d ageBars=%d dist=%.5f atr=%.5f",
+                           g_active_setups[i].setup_id, owner, ticket,
+                           ageBars, dist_now, atr_now);
+               OBL_RemoveTicketObjects(ticket);
+               g_active_setups[i].pending_ticket = 0;
+               g_active_setups[i].is_valid = false;
+            }
+            continue;
+         }
+      }
+      // FASE 2 - LOCKED_FOR_FILL: se il prezzo e' gia' vicino al
+      // pending entro 0.35 ATR -> FREEZE reprice e cancel.
+      // Aggiorna overlay con colore "locked" (giallo intenso, w=2).
+      if (pre_locked) {
+         static datetime __pm_lockLog = 0;
+         if (now - __pm_lockLog > 60) {
+            __pm_lockLog = now;
+            PrintFormat("[PendingMgr] LOCKED_FOR_FILL setup=%d %s tkt=%d dist=%.5f tz=%.5f - freeze reprice",
+                        g_active_setups[i].setup_id, owner, ticket,
+                        pre_dist_touch, pre_touch_zone);
+         }
+         string pfx2 = StringFormat("OBL_LVL_%d_ENTRY", ticket);
+         ObjectSetInteger(0, pfx2, OBJPROP_COLOR, OBL_PAL_ENTRY_LIVE);
+         ObjectSetInteger(0, pfx2, OBJPROP_WIDTH, 2);
+         continue;
+      }
+
+      // Throttle: rispetta min interval tra due reprice.
+      int min_interval = Mode_PendingMinRepriceIntervalSec();
+      if (g_active_setups[i].last_reprice_time > 0 &&
+          (now - g_active_setups[i].last_reprice_time) < min_interval) continue;
+      // Cap reprice count - oltre il quale solo CANCEL su invalidazione
+      // (no infinite chase).
+      if (g_active_setups[i].reprice_count >= Mode_PendingMaxReprice()) continue;
+
+      // Ricalcola entry corretta
+      double new_entry = Pending_RecomputeEntry(owner,
+                                                g_active_setups[i].direction,
+                                                g_active_setups[i].primary_poi);
+      double old_entry = g_active_setups[i].pending_price;
+      if (new_entry <= 0 || old_entry <= 0) continue;
+
+      // Move tolerance: niente modify se la differenza e' trascurabile.
+      double tol = Mode_PendingMoveToleranceATR() * atr_now;
+      if (MathAbs(new_entry - old_entry) < tol) continue;
+
+      // No-chase guard: il nuovo entry sarebbe troppo vicino al
+      // prezzo corrente -> stiamo inseguendo. Skip.
+      double dist_to_cur = MathAbs(new_entry - cur);
+      double nochase    = Mode_NoChaseAtrK() * atr_now;
+      if (dist_to_cur < nochase) {
+         static datetime __pm_chaseLog = 0;
+         if (now - __pm_chaseLog > 60) {
+            __pm_chaseLog = now;
+            PrintFormat("[PendingMgr] SKIP chase setup=%d %s new=%.5f cur=%.5f (atr=%.5f)",
+                        g_active_setups[i].setup_id, owner, new_entry, cur, atr_now);
+         }
+         continue;
+      }
+      // Sanity: pending LIMIT deve restare dal lato giusto del prezzo.
+      bool sane = (g_active_setups[i].direction == 1)
+                  ? (new_entry < cur) : (new_entry > cur);
+      if (!sane) continue;
+
+      // FASE 5 - ricalcola SL projected coerente con new_entry
+      // (preservando il risk in ATR originale). NO broker SL su
+      // pending staged: AA_OrderModify riceve 0,0.
+      double old_sl = g_active_setups[i].pending_sl;
+      double old_risk = MathAbs(old_entry - old_sl);
+      double new_sl;
+      if (old_risk > 0) {
+         new_sl = (g_active_setups[i].direction == 1)
+                  ? new_entry - old_risk
+                  : new_entry + old_risk;
+      } else {
+         new_sl = old_sl;
+      }
+      // OrderModify: SL/TP broker rimangono 0 (gestione interna);
+      // aggiorniamo solo entry price + expiry.
+      if (AA_OrderModify(ticket, new_entry, 0.0, 0.0)) {
+         g_active_setups[i].pending_price     = new_entry;
+         g_active_setups[i].pending_sl        = new_sl;
+         g_active_setups[i].last_reprice_time = now;
+         g_active_setups[i].reprice_count++;
+         PrintFormat("[PendingMgr] MODIFY setup=%d %s tkt=%d entry %.5f->%.5f sl_int %.5f->%.5f rep=%d/%d",
+                     g_active_setups[i].setup_id, owner, ticket,
+                     old_entry, new_entry, old_sl, new_sl,
+                     g_active_setups[i].reprice_count,
+                     Mode_PendingMaxReprice());
+         // FASE 4 - REALTIME overlay sync: aggiorna anche
+         // g_staged correlato (pending_ticket match) cosi'
+         // OBL_STG_<stg_id>_ENTRY/SL/TP* si spostano live.
+         for (int s = 0; s < g_staged_count; s++) {
+            if (g_staged[s].pending_ticket != ticket)        continue;
+            if (g_staged[s].state == STG_INVALIDATED ||
+                g_staged[s].state == STG_EXPIRED)            continue;
+            double slShift = new_sl - old_sl;
+            g_staged[s].entry_proj = new_entry;
+            g_staged[s].sl_proj    = new_sl;
+            // Sposta in parallelo TP1/2/3/MAX (preserva R:R proiezione)
+            if (g_staged[s].tp1_proj   > 0) g_staged[s].tp1_proj   += slShift;
+            if (g_staged[s].tp2_proj   > 0) g_staged[s].tp2_proj   += slShift;
+            if (g_staged[s].tp3_proj   > 0) g_staged[s].tp3_proj   += slShift;
+            if (g_staged[s].tpmax_proj > 0) g_staged[s].tpmax_proj += slShift;
+            Staging_DrawProjected(s);     // ObjectSet su oggetti esistenti
+            break;
+         }
+      }
+   }
+}
+
+double Hyb_GetEntryDistanceATR(string strat) {
+   // FASE 3+7: distanza minima entry-limit dal current price
+   // in ATR. Adattata per asset class + TF + Mode + quality.
+   int cls = Hyb_SymbolClass();
+   double base = 0.30;                                  // fx default
+   if      (cls == HYB_SYM_CRYPTO) base = 0.80;         // BTC: 0.8 ATR minimo
+   else if (cls == HYB_SYM_METAL)  base = 0.40;
+   else if (cls == HYB_SYM_INDEX)  base = 0.35;
+   double q = Hybrid_QualityFor(strat);                 // 0..100
+   if (q >= 70) base *= 0.85;
+   else if (q <= 40) base *= 1.20;
+   base *= Hyb_TF_Scale();                              // FASE 3 (M5 -> 0.55)
+   base *= Mode_EntryDistanceMultiplier();              // FASE 7
+   return base;
+}
+
+double Hyb_GetSLBufferATR(string strat) {
+   // FASE 3+7: buffer SL dietro POI in ATR
+   int cls = Hyb_SymbolClass();
+   double base = 0.50;
+   if      (cls == HYB_SYM_CRYPTO) base = 1.20;
+   else if (cls == HYB_SYM_METAL)  base = 0.80;
+   else if (cls == HYB_SYM_INDEX)  base = 0.60;
+   double q = Hybrid_QualityFor(strat);
+   if (q <= 40) base *= 1.20;
+   // SL buffer scala MENO della distanza (M5 0.75 invece di 0.55)
+   // per garantire SL realistico anche su TF bassi.
+   double tfShrink = MathMax(0.75, Hyb_TF_Scale());
+   base *= tfShrink;
+   return base;
+}
+
+int Hyb_GetExpirySeconds(string strat) {
+   // FASE 3+7: expiry adattata per asset class + TF + Mode
+   int cls = Hyb_SymbolClass();
+   double base;
+   if      (cls == HYB_SYM_CRYPTO) base = 8.0 * 3600.0;
+   else if (cls == HYB_SYM_METAL)  base = 6.0 * 3600.0;
+   else if (cls == HYB_SYM_INDEX)  base = 4.0 * 3600.0;
+   else                            base = 4.0 * 3600.0;
+   base *= Hyb_TF_ExpiryScale();                        // M5 -> 48min
+   base *= Mode_ExpiryMultiplier();                     // Conservative -> 70%
+   return (int)MathMax(300.0, base);                    // floor 5 min
+}
+
+// Restituisce l'indice (0=proximal, 1=CE, 2=distal) della zona di
+// entry preferita per il modello hybrid corrente. La mappa segue la
+// Patch 16:
+//   Sweep+MSS+FVG / Judas+FVG / Macro+Liq+FVG -> CE (50%)
+//   Breaker+OTE / OB Mitigation+OTE          -> proximal
+//   OB+FVG / Unicorn / Liq+Breaker+FVG       -> proximal (overlap zone)
+//   AMD                                       -> distal (retracement profondo)
+//   default                                   -> proximal
+int Hyb_PickFVGZoneIndex(string strat) {
+   int m = g_hyb_model_id;
+   if (m == HYB_MODEL_SWEEP_MSS_FVG)       return 1;    // CE
+   if (m == HYB_MODEL_JUDAS_FVG)           return 1;
+   if (m == HYB_MODEL_MACRO_LIQ_FVG)       return 1;
+   if (m == HYB_MODEL_BREAKER_OTE)         return 0;    // proximal
+   if (m == HYB_MODEL_OB_MIT_OTE)          return 0;
+   if (m == HYB_MODEL_OB_FVG_CONFLUENCE)   return 0;
+   if (m == HYB_MODEL_UNICORN)             return 0;
+   if (m == HYB_MODEL_LIQ_BREAKER_FVG)     return 0;
+   if (m == HYB_MODEL_SMT_MSS_FVG)         return 0;
+   if (m == HYB_MODEL_AMD_EXPANSION)       return 2;    // distal
+   return 0;
+}
+
+double Hyb_AddOnLotFactor(string strat) {
+   // Lotto add-on rispetto al base: 0.5x default, 0.4x crypto, 0.6x setup forti.
+   int cls = Hyb_SymbolClass();
+   double base = (cls == HYB_SYM_CRYPTO ? 0.4 : 0.5);
+   double q = Hybrid_QualityFor(strat);
+   if (q >= 75) base = MathMin(0.6, base + 0.10);
+   return base;
+}
+
+// ============================================================
 // ADD-ON ENGINE: Strategy-specific scale-in logic
 // ============================================================
 
 void AddOn_Breakout_RetestLimit(int dir, double entryPrice, double atr) {
    if (CountOpenOrders(BreakoutMagic) >= MaxOpenTradesPerStrat) return;
+   // PATCH C: anti-spam pending vicino al livello breakout
+   if (Owner_HasPendingNearPrice(BreakoutMagic, entryPrice, 0.4 * atr)) return;
    
    double lots = NormalizeLotToMarket(Active_ManualLot());
-   double sl_dist = atr * 1.5;
-   double tp_dist = atr * 2.5;
-   
-   double price, sl, tp;
+   // FASE 4 - distanze adaptive per asset/TF/Mode
+   double dist_atr = Hyb_GetEntryDistanceATR("Breakout");
+   double sl_atr   = Hyb_GetSLBufferATR("Breakout") * 1.5;
+   double sl_dist  = atr * sl_atr;
+   int    expSec   = Hyb_GetExpirySeconds("Breakout");
+   double price, sl, invalidation;
    if (dir > 0) {
-      price = entryPrice - atr * 0.3; // Retest below breakout
+      price = entryPrice - atr * dist_atr;
       sl = price - sl_dist;
-      tp = price + tp_dist;
+      invalidation = entryPrice - sl_dist * 1.5;
       lots = Risk_ClampLotToMaxRisk(Symbol(), lots, sl, price);
       if (lots <= 0) return;
-      bool _wRes = SafeOrderSend(Symbol(), OP_BUYLIMIT, lots, NormalizeDouble(price, Digits), 3,
-         NormalizeDouble(sl, Digits), NormalizeDouble(tp, Digits),
-         "Breakout_Retest", BreakoutMagic, TimeCurrent() + 3600, clrGreen);
    } else {
-      price = entryPrice + atr * 0.3;
+      price = entryPrice + atr * dist_atr;
       sl = price + sl_dist;
-      tp = price - tp_dist;
+      invalidation = entryPrice + sl_dist * 1.5;
       lots = Risk_ClampLotToMaxRisk(Symbol(), lots, sl, price);
       if (lots <= 0) return;
-      bool _wRes = SafeOrderSend(Symbol(), OP_SELLLIMIT, lots, NormalizeDouble(price, Digits), 3,
-         NormalizeDouble(sl, Digits), NormalizeDouble(tp, Digits),
-         "Breakout_Retest", BreakoutMagic, TimeCurrent() + 3600, clrRed);
    }
+   // FASE 2-5 - STAGING: draw + confirm + deploy ritardato.
+   double quality = MathMax(55.0, Hybrid_QualityFor("Breakout"));
+   Staging_Submit("Breakout", dir, price, sl, lots, BreakoutMagic,
+                  "Breakout_Retest", expSec,
+                  (dir > 0 ? clrGreen : clrRed),
+                  quality, invalidation, atr);
 }
 
 void AddOn_Reverse_ReclaimLimit(int dir, double pivotPrice, double atr) {
    if (CountOpenOrders(ReverseMagic) >= MaxOpenTradesPerStrat) return;
+   // PATCH C: anti-spam pending vicino
+   if (Owner_HasPendingNearPrice(ReverseMagic, pivotPrice, 0.4 * atr)) return;
    
    double lots = NormalizeLotToMarket(Active_ManualLot());
-   double sl_dist = atr * 1.2;
-   double tp_dist = atr * 2.0;
-   
-   double price, sl, tp;
+   // FASE 4 - distanze adaptive per asset/TF/Mode
+   double dist_atr = Hyb_GetEntryDistanceATR("Reverse") * 0.5;
+   double sl_atr   = Hyb_GetSLBufferATR("Reverse") * 1.2;
+   double sl_dist  = atr * sl_atr;
+   int    expSec   = Hyb_GetExpirySeconds("Reverse");
+   double price, sl, invalidation;
    if (dir > 0) {
-      price = pivotPrice + atr * 0.1;
+      price = pivotPrice + atr * dist_atr;
       sl = price - sl_dist;
-      tp = price + tp_dist;
+      invalidation = pivotPrice - sl_dist * 1.2;
       lots = Risk_ClampLotToMaxRisk(Symbol(), lots, sl, price);
       if (lots <= 0) return;
-      bool _wRes = SafeOrderSend(Symbol(), OP_BUYLIMIT, lots, NormalizeDouble(price, Digits), 3,
-         NormalizeDouble(sl, Digits), NormalizeDouble(tp, Digits),
-         "Reverse_Reclaim", ReverseMagic, TimeCurrent() + 3600, clrGreen);
    } else {
-      price = pivotPrice - atr * 0.1;
+      price = pivotPrice - atr * dist_atr;
       sl = price + sl_dist;
-      tp = price - tp_dist;
+      invalidation = pivotPrice + sl_dist * 1.2;
       lots = Risk_ClampLotToMaxRisk(Symbol(), lots, sl, price);
       if (lots <= 0) return;
-      bool _wRes = SafeOrderSend(Symbol(), OP_SELLLIMIT, lots, NormalizeDouble(price, Digits), 3,
-         NormalizeDouble(sl, Digits), NormalizeDouble(tp, Digits),
-         "Reverse_Reclaim", ReverseMagic, TimeCurrent() + 3600, clrRed);
    }
+   // FASE 2-5 - STAGING: draw + confirm + deploy ritardato.
+   double quality = MathMax(55.0, Hybrid_QualityFor("Reverse"));
+   Staging_Submit("Reverse", dir, price, sl, lots, ReverseMagic,
+                  "Reverse_Reclaim", expSec,
+                  (dir > 0 ? clrGreen : clrRed),
+                  quality, invalidation, atr);
 }
 
 void Execution_PlaceInitialBurstEntries(string sym, int dir, double lots,
@@ -40062,7 +43967,10 @@ bool IsReverseAdvanced(int shift=1) {
    double bb_upper = iBands(Symbol(), 0, 20, 2, 0, PRICE_CLOSE, MODE_UPPER, shift);
    double bb_lower = iBands(Symbol(), 0, 20, 2, 0, PRICE_CLOSE, MODE_LOWER, shift);
    double price = iClose(Symbol(), 0, shift);
-   if ((rsi > 70 && price >= bb_upper) || (rsi < 30 && price <= bb_lower)) return true;
+   // FASE 7 (Patch 5): soglie OB/OS adaptive
+   int __rsi_ob_r = GetAdaptive_RSI_OB();
+   int __rsi_os_r = GetAdaptive_RSI_OS();
+   if ((rsi > __rsi_ob_r && price >= bb_upper) || (rsi < __rsi_os_r && price <= bb_lower)) return true;
    return false;
 }
 
@@ -40101,7 +44009,18 @@ bool IsStrategyCoolingDown(string stratName) {
    else if (stratName == "ICT")        lastTime = lastTradeTime_ICT;
    else if (stratName == "Reverse")    lastTime = lastTradeTime_Reverse;
    if (lastTime == 0) return false;
-   int cooldownSec = NewsCooldownMinutes * 60;
+             // FASE 1 NEW (event-driven) - questo cooldown e' ora un puro
+   // anti-burst secondario, NON il driver principale. Le owner
+   // Breakout/Reverse/Grid rivalutano naturalmente su new-bar +
+   // wick evolution; il cooldown impedisce solo di richiamare la
+   // stessa logic 5 volte nello stesso secondo.
+   // Base ridotta a NewsCooldownMinutes / 6 (= 5 min con default).
+   // Poi TF + Mode scaling.
+   double modeMul = (Mode == Conservative ? 1.50 :
+                    (Mode == Aggressive   ? 0.50 : 1.00));
+   int cooldownSec = (int)MathRound((NewsCooldownMinutes * 60.0 / 6.0) *
+                                     Hyb_TF_Scale() * modeMul);
+   if (cooldownSec < 10) cooldownSec = 10;  // floor 10s pure anti-burst
    return (TimeCurrent() - lastTime) < cooldownSec;
 }
 
@@ -40245,31 +44164,141 @@ bool IsHammer(int shift) {
 }
 
 void Strategy_FVG_Logic_v2() {
+   // PATCH 11 - FVG LIMIT-first:
+   //   1) trova il miglior gap (best-score: gap_size * recency * align)
+   //   2) Hybrid_RefineBias filtra il lato opposto se hybrid e' forte
+   //   3) Hyb_PickFVGZoneIndex sceglie proximal/CE/distal in base al
+   //      modello hybrid corrente (Sweep+MSS+FVG -> CE, Breaker+OTE
+   //      -> proximal, AMD -> distal, etc.)
+   //   4) SL reale dietro il POI con buffer crypto-aware
+   //   5) BUYLIMIT/SELLLIMIT con expiry crypto-aware (FX/INDEX=4h,
+   //      METAL=6h, CRYPTO=8h)
+   //   6) Setup_Register + Execution_PlaceAdaptiveAddOnLimits su
+   //      livelli rimanenti (mediazione tecnica reale, non grid)
+   //
+   // Market fallback: solo se prezzo gia' dentro la zona e gap stretto
+   // (continuation), altrimenti SOLO limit.
    if (!FVG) return;
    if (!AllowStrategyToTrade()) return;
+   // PATCH F: gate budget condiviso sul symbol (max MaxRiskForSymbol
+   // deployment tra FVG/SMC/ICT/Reverse/Breakout).
+   if (!OwnerSymbolBudget_CanDeploy("FVG")) return;
+
+   int    hyb_dir = Hybrid_RefineBias(0, "FVG");
+   double atr     = iATR(Symbol(), 0, 14, 0);
+   if (atr <= 0) atr = 50 * Point;
+   double sl_buf  = Hyb_GetSLBufferATR("FVG") * atr;
+   double minDist = Hyb_GetEntryDistanceATR("FVG") * atr;
+
+   int    best_dir   = 0;
+   double best_score = -1.0;
+   double best_h     = 0.0;          // gap top
+   double best_l     = 0.0;          // gap bottom
+   int    best_bar   = 0;
+
    for (int i = 2; i < 50; i++) {
       double h0 = iHigh(Symbol(), Period(), i);
-      double l0 = iLow(Symbol(), Period(), i);
+      double l0 = iLow (Symbol(), Period(), i);
       double h2 = iHigh(Symbol(), Period(), i - 2);
-      double l2 = iLow(Symbol(), Period(), i - 2);
-      if (l2 > h0) {
-         double entry = (h0 + l2) / 2.0;
-         if (Bid <= entry) {
-            ExecuteBuy(ManualLot, 0, 0, "FVG_v2", FVGMagic);
-            return;
+      double l2 = iLow (Symbol(), Period(), i - 2);
+
+      // Bullish FVG (gap up)
+      if (l2 > h0 && hyb_dir >= 0) {
+         double gap_size = (l2 - h0) / atr;
+         if (gap_size < 0.15) continue;        // gap troppo piccolo: skip
+         double recency = 1.0 / (1.0 + i * 0.1);
+         double align   = (hyb_dir == +1 ? 1.5 : 1.0);
+         double score   = gap_size * recency * align;
+         if (score > best_score) {
+            best_score = score; best_dir = +1;
+            best_h = l2; best_l = h0; best_bar = i;
          }
       }
-      if (h2 < l0) {
-         double entry = (l0 + h2) / 2.0;
-         if (Ask >= entry) {
-            ExecuteSell(ManualLot, 0, 0, FVGMagic, "FVG_v2");
-            return;
+      // Bearish FVG (gap down)
+      if (h2 < l0 && hyb_dir <= 0) {
+         double gap_size = (l0 - h2) / atr;
+         if (gap_size < 0.15) continue;
+         double recency = 1.0 / (1.0 + i * 0.1);
+         double align   = (hyb_dir == -1 ? 1.5 : 1.0);
+         double score   = gap_size * recency * align;
+         if (score > best_score) {
+            best_score = score; best_dir = -1;
+            best_h = l0; best_l = h2; best_bar = i;
          }
       }
    }
+
+   if (best_dir == 0) return;
+   // FASE 7: quality floor by Mode (Conservative=65, Moderate=50, Aggressive=40)
+   if (Hybrid_QualityFor("FVG") < Mode_QualityFloor()) {
+      PrintFormat("[FVG_v2] skip - quality %.1f < Mode floor %.1f",
+                  Hybrid_QualityFor("FVG"), Mode_QualityFloor());
+      return;
+   }
+
+   // Build zone levels: proximal / CE / distal
+   double fvgHigh = best_h, fvgLow = best_l;
+   double levels[];
+   int n = FVG_GetAddOnLevels(Symbol(), Period(), best_dir, fvgHigh, fvgLow, levels);
+   if (n < 1) return;
+
+   int zoneIdx = Hyb_PickFVGZoneIndex("FVG");
+   if (zoneIdx >= n) zoneIdx = 0;
+   double entryPx = levels[zoneIdx];
+   double curPx   = (best_dir == 1 ? Ask : Bid);
+
+   // Direzione coerente con limit: BUYLIMIT deve essere SOTTO Ask,
+   // SELLLIMIT SOPRA Bid. Se non lo e' (prezzo gia' dentro), si entra
+   // market fallback SOLO se la distanza dal CE e' < minDist.
+   bool useMarketFallback = false;
+   if (best_dir == 1 && entryPx >= curPx - minDist) {
+      double ceDist = MathAbs(curPx - levels[(n > 1 ? 1 : 0)]);
+      useMarketFallback = (ceDist < minDist);
+   } else if (best_dir == -1 && entryPx <= curPx + minDist) {
+      double ceDist2 = MathAbs(curPx - levels[(n > 1 ? 1 : 0)]);
+      useMarketFallback = (ceDist2 < minDist);
+   }
+
+   // SL reale dietro POI (gap edge esterno)
+   double slPx = (best_dir == 1 ? fvgLow - sl_buf : fvgHigh + sl_buf);
+   double tpPx = 0.0;                       // tp=0 -> delegato a TPSL ladder
+
+   // Lot size (Active_ManualLot + risk clamp downstream)
+   double lots = NormalizeLotToMarket(Active_ManualLot());
+   lots = Risk_ClampLotToMaxRisk(Symbol(), lots, slPx, entryPx);
+   if (lots <= 0) return;
+
+   if (useMarketFallback) {
+      // FASE 3 - no market fallback standard. FVG e' un retest model;
+      // se il gap e' troppo stretto per un pending LIMIT, defer al
+      // prossimo bar dove la zona puo' essere ricomposta correttamente.
+      PrintFormat("[FVG_v2] gap too tight for LIMIT - defer (no market fallback) dir=%d entry=%.5f",
+                  best_dir, entryPx);
+      return;
+   }
+
+   // PATCH C: anti-spam - pending FVG gia' presente vicino al prezzo target
+   if (Owner_HasPendingNearPrice(FVGMagic, entryPx, 0.3 * atr)) {
+      PrintFormat("[FVG_v2] pending gia' presente near %.5f - skip", entryPx);
+      return;
+   }
+   // FASE 2-5 - STAGING MODEL: detection + draw, no immediate send.
+   // L'invalidazione e' calcolata qui ma il deploy reale avviene
+   // solo dopo che Staging_TryConfirm passa (min hold + bias + sanity).
+   double invalidation = (best_dir == 1 ? fvgLow - sl_buf : fvgHigh + sl_buf);
+   double quality      = MathMax(50.0, Hybrid_QualityFor("FVG"));
+   int    expSec       = Hyb_GetExpirySeconds("FVG");
+   string cmt          = StringFormat("FVG_v2_L%d", zoneIdx);
+   int stgId = Staging_Submit("FVG", best_dir, entryPx, slPx, lots, FVGMagic,
+                              cmt, expSec,
+                              (best_dir == 1 ? clrAqua : clrOrange),
+                              quality, invalidation, atr);
+   PrintFormat("[FVG_v2] STAGED %s dir=%d entry=%.5f sl=%.5f zone=%d bar=%d stg=%d q=%.1f",
+               (best_dir == 1 ? "BUY" : "SELL"), best_dir, entryPx, slPx,
+               zoneIdx, best_bar, stgId, quality);
 }
 
-void Strategy_RSI_Logic()       { if (!AllowStrategyToTrade()) return; double rsi=iRSI(Symbol(),0,14,PRICE_CLOSE,1); int dir=0; if(rsi<30) dir=1; else if(rsi>70) dir=-1; if(dir==0)return; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
+void Strategy_RSI_Logic()       { if (!AllowStrategyToTrade()) return; double rsi=iRSI(Symbol(),0,14,PRICE_CLOSE,1); int dir=0; int __os=GetAdaptive_RSI_OS(); int __ob=GetAdaptive_RSI_OB(); if(rsi<__os) dir=1; else if(rsi>__ob) dir=-1; if(dir==0)return; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_MACD_Logic()      { if (!AllowStrategyToTrade()) return; double m=iMACD(Symbol(),0,12,26,9,PRICE_CLOSE,MODE_MAIN,1),s=iMACD(Symbol(),0,12,26,9,PRICE_CLOSE,MODE_SIGNAL,1); int dir=(m>s)?1:-1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_Stochastic_Logic(){ if (!AllowStrategyToTrade()) return; double k=iStochastic(Symbol(),0,5,3,3,MODE_SMA,0,MODE_MAIN,1); int dir=0; if(k<20) dir=1; else if(k>80) dir=-1; if(dir==0)return; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_CCI_Logic()       { if (!AllowStrategyToTrade()) return; double cci=iCCI(Symbol(),0,14,PRICE_TYPICAL,1); int dir=0; if(cci<-100) dir=1; else if(cci>100) dir=-1; if(dir==0)return; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
@@ -40293,7 +44322,7 @@ void Strategy_DMI_Logic()       { if (!AllowStrategyToTrade()) return; double dp
 void Strategy_QQE_Logic()       { if (!AllowStrategyToTrade()) return; double rsi=iRSI(Symbol(),0,14,PRICE_CLOSE,1); double ema_rsi=iMA(Symbol(),0,5,0,MODE_EMA,PRICE_CLOSE,1); int dir=(rsi>50)?1:-1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_HMA_Logic()       { if (!AllowStrategyToTrade()) return; double h0=iMA(Symbol(),0,9,0,MODE_LWMA,PRICE_CLOSE,0),h1=iMA(Symbol(),0,9,0,MODE_LWMA,PRICE_CLOSE,1); int dir=(h0>h1)?1:-1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_trend_score+=(dir>0)?8.0:-8.0; }
 void Strategy_Keltner_Logic()   { if (!AllowStrategyToTrade()) return; double mid=iMA(Symbol(),0,20,0,MODE_EMA,PRICE_CLOSE,1); double atr=iATR(Symbol(),0,10,1); double up=mid+1.5*atr,dn=mid-1.5*atr; double p=iClose(Symbol(),0,1); int dir=0; if(p<=dn) dir=1; else if(p>=up) dir=-1; if(dir==0)return; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
-void Strategy_LaguerreRSI_Logic(){ if (!AllowStrategyToTrade()) return; double rsi=iRSI(Symbol(),0,14,PRICE_CLOSE,1); int dir=0; if(rsi<20) dir=1; else if(rsi>80) dir=-1; if(dir==0)return; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
+void Strategy_LaguerreRSI_Logic(){ if (!AllowStrategyToTrade()) return; double rsi=iRSI(Symbol(),0,14,PRICE_CLOSE,1); int dir=0; int rsi_os=GetAdaptive_RSI_Extreme_OS(); int rsi_ob=GetAdaptive_RSI_Extreme_OB(); if(rsi<rsi_os) dir=1; else if(rsi>rsi_ob) dir=-1; if(dir==0)return; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_ROC_Logic()       { if (!AllowStrategyToTrade()) return; double c0=iClose(Symbol(),0,1),c12=iClose(Symbol(),0,13); if(c12<=0)return; double roc=(c0-c12)/c12*100; int dir=(roc>0)?1:-1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?8.0:-8.0; }
 void Strategy_TRIX_Logic()      { if (!AllowStrategyToTrade()) return; double e1=iMA(Symbol(),0,15,0,MODE_EMA,PRICE_CLOSE,0),e2=iMA(Symbol(),0,15,0,MODE_EMA,PRICE_CLOSE,1); int dir=(e1>e2)?1:-1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?5.0:-5.0; }
 void Strategy_UlcerIndex_Logic(){ if (!AllowStrategyToTrade()) return; double atr=iATR(Symbol(),0,14,1),avg=iATR(Symbol(),0,14,5); int dir=(atr<avg)?1:-1; if(dir>0)g_ind_bull_count++; else g_ind_bear_count++; g_ind_osc_score+=(dir>0)?5.0:-5.0; }

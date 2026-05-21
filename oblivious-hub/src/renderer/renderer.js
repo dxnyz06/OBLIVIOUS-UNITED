@@ -195,7 +195,49 @@ const priceBuffer = []; // {t, p}
 function pushPriceTick(price) {
   if (price == null || isNaN(+price)) return;
   priceBuffer.push({ t: Date.now(), p: +price });
-  if (priceBuffer.length > 240) priceBuffer.shift();
+  if (priceBuffer.length > 720) priceBuffer.shift();
+}
+
+/**
+ * Aggregate raw ticks into proper OHLC bars so lightweight-charts can
+ * draw candles instead of single-point lines.
+ * @param {{t:number,p:number}[]} ticks
+ * @param {number} secPerBar  bar width in seconds (1, 5, 60, …)
+ * @returns {{t:number,o:number,h:number,l:number,c:number}[]}
+ */
+function aggregateTicksToBars(ticks, secPerBar) {
+  if (!ticks || !ticks.length) return [];
+  const w = (secPerBar || 1) * 1000;
+  const bars = new Map();
+  for (const tk of ticks) {
+    if (!tk || tk.p == null || !isFinite(+tk.p)) continue;
+    const bucket = Math.floor(tk.t / w) * w;
+    const p = +tk.p;
+    let b = bars.get(bucket);
+    if (!b) {
+      b = { t: bucket, o: p, h: p, l: p, c: p };
+      bars.set(bucket, b);
+    } else {
+      if (p > b.h) b.h = p;
+      if (p < b.l) b.l = p;
+      b.c = p;
+    }
+  }
+  return [...bars.values()].sort((a, b) => a.t - b.t);
+}
+function tfToSec(tf) {
+  // For the synthetic tick-driven view we use SHORTER bar widths than
+  // the EA timeframe so candles actually appear within seconds, not
+  // minutes. (The EA OHLC stream — if present — bypasses this entirely.)
+  switch ((tf || "").toLowerCase()) {
+    case "1m":  return 5;     // 5-second bars
+    case "5m":  return 15;    // 15-second
+    case "15m": return 30;    // 30-second
+    case "1h":  return 60;    // 1-min
+    case "4h":  return 300;   // 5-min
+    case "1d":  return 900;   // 15-min
+    default:    return 5;
+  }
 }
 
 // =====================================================================
@@ -404,7 +446,10 @@ function paintChart() {
   if (eaBars) {
     bars = eaBars;
   } else if (priceBuffer.length >= 2) {
-    bars = priceBuffer.map((pt) => ({ t: pt.t, o: pt.p, h: pt.p, l: pt.p, c: pt.p }));
+    // Aggregate raw ticks into proper OHLC bars (per the active TF) so
+    // lightweight-charts can actually render candles instead of single
+    // points → was the "only lines, no candle" bug.
+    bars = aggregateTicksToBars(priceBuffer, tfToSec(tf));
   } else if (Date.now() - _lastEaPushTs > 6000) {
     // EA silent for 6+s → start synthetic feed (clearly marked in status)
     bars = _tickSynth(sym);
@@ -1251,44 +1296,178 @@ async function initInteractions() {
     };
   });
 
-  // SSH AUTOMATIC handlers (UI only — backend service hooks are TODO)
-  const sshTest = $("ssh-test");
-  if (sshTest) sshTest.onclick = async () => {
-    const host = $("ssh-host")?.value, port = $("ssh-port")?.value,
-          user = $("ssh-user")?.value, key = $("ssh-key")?.value;
-    setKeyStatus(`SSH test → ${user}@${host}:${port} (UI only)`, true);
-    // Persist locally so the field survives reloads
-    try { localStorage.setItem("ssh-cfg", JSON.stringify({ host, port, user, key })); } catch (_) {}
-  };
-  const sshDeploy = $("ssh-deploy");
-  if (sshDeploy) sshDeploy.onclick = () => setKeyStatus("Deploy queued (TODO: backend hook)", true);
-  // Restore SSH config from localStorage
-  try {
-    const cfg = JSON.parse(localStorage.getItem("ssh-cfg") || "{}");
-    if (cfg.host) $("ssh-host").value = cfg.host;
-    if (cfg.port) $("ssh-port").value = cfg.port;
-    if (cfg.user) $("ssh-user").value = cfg.user;
-    if (cfg.key)  $("ssh-key").value  = cfg.key;
-  } catch (_) {}
+  // ═══════════════════════════════════════════════════════════════════
+  // SSH AUTOMATIC + DEPLOY — real backend wiring via window.hub.ssh / .deploy
+  // ═══════════════════════════════════════════════════════════════════
+  const sshLog    = $("ssh-log");
+  const deployLog = $("deploy-log");
+  const accessLog = $("access-log");
+  function logTo(el, msg, level = "info") {
+    if (!el) return;
+    const t = new Date().toLocaleTimeString();
+    const div = document.createElement("div");
+    div.className = `log-line log-${level}`;
+    div.textContent = `[${t}] ${msg}`;
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+    while (el.children.length > 200) el.removeChild(el.firstChild);
+  }
+  function setSshPill(ok) {
+    const pill = $("ssh-status-pill");
+    if (!pill) return;
+    pill.innerHTML = ok
+      ? `<span class="dot dot-online"></span><span>CONNECTED</span>`
+      : `<span class="dot dot-down"></span><span>DISCONNECTED</span>`;
+  }
+  function setHubPill(state) {
+    const pill = $("dep-hub-pill");
+    if (!pill) return;
+    pill.innerHTML = state === "live"
+      ? `<span class="dot dot-online"></span><span>LIVE</span>`
+      : (state === "down"
+        ? `<span class="dot dot-down"></span><span>DOWN</span>`
+        : `<span class="dot dot-down"></span><span>UNKNOWN</span>`);
+  }
+  function readFormProfile() {
+    return {
+      host: ($("ssh-host")?.value || "").trim(),
+      port: +($("ssh-port")?.value || 22),
+      user: ($("ssh-user")?.value || "").trim(),
+      remoteInstallPath: ($("ssh-remote-path")?.value || "").trim(),
+      privateKeyPath:    $("ssh-key")?.value || "",
+      publicKeyPath:     $("ssh-pubkey")?.value || "",
+    };
+  }
+  async function fillKeyPaths() {
+    const s = await window.hub.ssh.status();
+    if (!s.ok) return;
+    if ($("ssh-key"))    $("ssh-key").value    = s.privateKeyPath || "";
+    if ($("ssh-pubkey")) $("ssh-pubkey").value = s.publicKeyPath  || "";
+  }
+  async function restoreProfile() {
+    const r = await window.hub.ssh.loadProfile();
+    if (r.ok && r.profile) {
+      const p = r.profile;
+      if (p.host) $("ssh-host").value = p.host;
+      if (p.port) $("ssh-port").value = p.port;
+      if (p.user) $("ssh-user").value = p.user;
+      if (p.remoteInstallPath) $("ssh-remote-path").value = p.remoteInstallPath;
+      if (p.privateKeyPath)    $("ssh-key").value    = p.privateKeyPath;
+      if (p.publicKeyPath)     $("ssh-pubkey").value = p.publicKeyPath;
+      logTo(sshLog, `Loaded encrypted VPS profile for ${p.user || "?"}@${p.host || "?"}`, "info");
+    } else {
+      logTo(sshLog, "No saved VPS profile yet — fill the form and click SAVE VPS PROFILE.", "info");
+    }
+  }
 
-  // MOBILE DEVICES handlers
-  const mobGen = $("mobile-generate");
-  if (mobGen) mobGen.onclick = async () => {
-    const ttl  = +$("mobile-ttl").value || 15;
-    const mode = $("mobile-pair-mode").value;
-    setKeyStatus(`Pairing token (${mode}, TTL=${ttl}m): OBV-${Math.random().toString(36).slice(2, 8).toUpperCase()}`, true);
+  // ── 1. GENERATE SSH KEYPAIR ─────────────────────────────────────
+  const sshGenBtn = $("ssh-gen");
+  if (sshGenBtn) sshGenBtn.onclick = async () => {
+    logTo(sshLog, "Generating Ed25519 keypair…", "info");
+    const r = await window.hub.ssh.generateKeypair({ overwrite: false });
+    if (!r.ok && r.reason === "keypair_exists") {
+      const yes = confirm("A keypair already exists. Overwrite? The old key will stop working immediately.");
+      if (!yes) { logTo(sshLog, "Keep existing keypair", "info"); await fillKeyPaths(); return; }
+      const r2 = await window.hub.ssh.generateKeypair({ overwrite: true });
+      if (!r2.ok) return logTo(sshLog, `Generate failed: ${r2.reason}`, "error");
+      logTo(sshLog, `New keypair generated. Fingerprint: ${r2.fingerprint}`, "info");
+    } else if (!r.ok) {
+      return logTo(sshLog, `Generate failed: ${r.reason}`, "error");
+    } else {
+      logTo(sshLog, `Keypair generated. Fingerprint: ${r.fingerprint}`, "info");
+    }
+    await fillKeyPaths();
   };
-  const mobRevAll = $("mobile-revoke-all");
-  if (mobRevAll) mobRevAll.onclick = () => {
-    $("paired-devices-list").innerHTML = `<li class="paired-empty">— no paired devices —</li>`;
-    setKeyStatus("All paired devices revoked", true);
+
+  // ── 2. INSTALL KEY ON VPS ─────────────────────────────────────
+  const sshInstBtn = $("ssh-install");
+  if (sshInstBtn) sshInstBtn.onclick = async () => {
+    const prof = readFormProfile();
+    const pwd  = ($("ssh-bootstrap-pwd")?.value || "");
+    if (!prof.host || !prof.user) return logTo(sshLog, "Host and User required", "error");
+    if (!pwd) return logTo(sshLog, "Bootstrap password required (only for first install)", "error");
+    logTo(sshLog, `Installing public key on ${prof.user}@${prof.host}:${prof.port}…`, "info");
+    const r = await window.hub.ssh.installKey({ ...prof, bootstrapPassword: pwd });
+    if (!r.ok) return logTo(sshLog, `Install failed: ${r.reason}`, "error");
+    logTo(sshLog, "Public key installed + host fingerprint pinned", "info");
+    // Clear the bootstrap password from the UI immediately
+    if ($("ssh-bootstrap-pwd")) $("ssh-bootstrap-pwd").value = "";
   };
+
+  // ── 3. TEST CONNECTION ─────────────────────────────────────────
+  const sshTestBtn = $("ssh-test");
+  if (sshTestBtn) sshTestBtn.onclick = async () => {
+    const prof = readFormProfile();
+    if (!prof.host || !prof.user) return logTo(sshLog, "Host and User required", "error");
+    logTo(sshLog, `Testing key-based SSH to ${prof.user}@${prof.host}:${prof.port}…`, "info");
+    const r = await window.hub.ssh.testConnection(prof);
+    if (!r.ok) { setSshPill(false); return logTo(sshLog, `Test failed: ${r.reason}`, "error"); }
+    setSshPill(true);
+    logTo(sshLog, `OK: ${r.uname || "remote uname"}`, "info");
+  };
+
+  // ── 4. SAVE VPS PROFILE (encrypted) ───────────────────────────
+  const sshSaveBtn = $("ssh-save");
+  if (sshSaveBtn) sshSaveBtn.onclick = async () => {
+    const prof = readFormProfile();
+    const r = await window.hub.ssh.saveProfile(prof);
+    if (!r.ok) return logTo(sshLog, `Save failed: ${r.reason}`, "error");
+    logTo(sshLog, "VPS profile saved (encrypted with operator vault passphrase)", "info");
+  };
+
+  // ── DEPLOY TAB handlers ───────────────────────────────────────
+  function bindDeployBtn(id, fn, busyMsg) {
+    const el = $(id); if (!el) return;
+    el.onclick = async () => {
+      el.disabled = true; logTo(deployLog, busyMsg, "info");
+      try {
+        const r = await fn();
+        if (!r.ok) logTo(deployLog, `${id} failed: ${r.reason}`, "error");
+        else       logTo(deployLog, `${id} → ${JSON.stringify(r).slice(0, 200)}`, "info");
+      } catch (err) {
+        logTo(deployLog, `${id} crashed: ${err.message}`, "error");
+      } finally { el.disabled = false; }
+    };
+  }
+  bindDeployBtn("dep-bundle",       () => window.hub.deploy.bundle(readFormProfile()),       "Uploading bundle via SFTP…");
+  bindDeployBtn("dep-push-config",  () => window.hub.deploy.pushConfig(readFormProfile()),   "Uploading config.enc…");
+  bindDeployBtn("dep-push-license", () => window.hub.deploy.pushLicense(readFormProfile()),  "Uploading license.lic + public_key.pem…");
+  bindDeployBtn("dep-restart",      () => window.hub.deploy.restartHub(readFormProfile()),   "Restarting remote Hub…");
+  bindDeployBtn("dep-stop",         () => window.hub.deploy.stopHub(readFormProfile()),      "Stopping remote Hub…");
+  bindDeployBtn("dep-logs",         () => window.hub.deploy.pullLogs(readFormProfile()),     "Downloading remote logs…");
+  bindDeployBtn("dep-health",       async () => {
+    const r = await window.hub.deploy.healthCheck(readFormProfile());
+    if (r.ok) {
+      setHubPill(r.hubAlive ? "live" : "down");
+      logTo(deployLog,
+        `HEALTH → hub=${r.hubAlive ? "LIVE" : "DOWN"} pid=${r.pid} mem=${r.memMB}MB ` +
+        `config=${r.configOk ? "OK" : "MISSING"} license=${r.licenseOk ? "OK" : "MISSING"} pubkey=${r.pubKeyOk ? "OK" : "MISSING"}`,
+        "info");
+    }
+    return r;
+  }, "Querying remote hub status…");
+
+  // ── Initial fill: paths + saved profile ───────────────────────
+  await fillKeyPaths();
+  await restoreProfile();
 
   // Hide VPS panel if not dev
   const st = await window.hub.vps.status();
-  if (!st.dev) $("panel-vps").style.display = "none";
+  function applyDeploymentMode(envInfo) {
+     const mode = (envInfo && envInfo.mode) || (envInfo && envInfo.dev ? "dev" : "client");
+     document.body.dataset.mode = mode;
+     const vpsPanel = $("panel-vps");
+     if (vpsPanel) vpsPanel.style.display = (mode === "dev") ? "" : "none";
+     if (mode === "vps") {
+        document.querySelectorAll("[data-dev-only]").forEach((el) => { el.style.display = "none"; });
+     }
+  }
+  applyDeploymentMode(st.env || { dev: !!st.dev });
+  if (window.hub.on) {
+     window.hub.on("hub:devModeChanged", (envInfo) => applyDeploymentMode(envInfo));
+  }
 
-  // VPS / SSH / Mobile status pills — refresh immediately + every 5s
+  // VPS pill + initial state
   async function refreshVpsPill() {
     try {
       const s = await window.hub.vps.status();
@@ -1303,23 +1482,97 @@ async function initInteractions() {
   }
   refreshVpsPill();
   setInterval(refreshVpsPill, 5000);
-
-  // SSH tunnel pill — driven by ssh-test result (no real backend yet)
-  function setSshPill(ok) {
-    const pill = $("ssh-status-pill");
-    if (!pill) return;
-    pill.innerHTML = ok
-      ? `<span class="dot dot-online"></span><span>CONNECTED</span>`
-      : `<span class="dot dot-down"></span><span>DISCONNECTED</span>`;
-  }
   setSshPill(false);
+  setHubPill("unknown");
   window._setSshPill = setSshPill;
 
-  // Mobile bridge pill — DEV always READY (in-memory pairing tokens)
-  const mobPill = $("mobile-status-pill");
-  if (mobPill) {
-    mobPill.innerHTML = `<span class="dot dot-online"></span><span>CONNECTED</span>`;
+  // ═══════════════════════════════════════════════════════════════════
+  // MOBILE DEVICES TAB
+  // ═══════════════════════════════════════════════════════════════════
+  const mobLog = $("mob-log");
+  function mlog(msg, level = "info") { logTo(mobLog, msg, level); }
+  function setMobPill(running) {
+    const p = $("mob-status-pill"); if (!p) return;
+    p.innerHTML = running
+      ? `<span class="dot dot-online"></span><span>RUNNING</span>`
+      : `<span class="dot dot-down"></span><span>STOPPED</span>`;
   }
+  function paintDevices(devices) {
+    const tb = $("mob-devices-body"); if (!tb) return;
+    if (!Array.isArray(devices) || !devices.length) {
+      tb.innerHTML = `<tr class="empty-row"><td colspan="6">no devices paired yet</td></tr>`;
+      return;
+    }
+    tb.innerHTML = devices.map((d) => {
+      const s   = d.revoked ? "revoked" : (d.status || "offline");
+      const cls = `status-${s.replace(/[^a-z]/gi, "")}`;
+      const last = d.last_seen ? new Date(d.last_seen).toLocaleString() : "—";
+      const act  = d.revoked
+        ? `<span class="dim">—</span>`
+        : `<button class="btn-revoke" data-revoke="${escapeHtml(d.device_id)}" data-testid="mob-revoke-${escapeHtml(d.device_id)}">REVOKE</button>`;
+      return `<tr>
+        <td>${escapeHtml(d.device_name || d.device_id)}</td>
+        <td>${escapeHtml(d.platform || "—")}</td>
+        <td>${escapeHtml(d.role || "viewer").toUpperCase()}</td>
+        <td class="${cls}">${escapeHtml(s.toUpperCase())}</td>
+        <td>${escapeHtml(last)}</td>
+        <td>${act}</td>
+      </tr>`;
+    }).join("");
+    tb.querySelectorAll("button.btn-revoke").forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm("Revoke this device? It will be disconnected immediately.")) return;
+        const r = await window.hub.mobile.revokeDevice({ device_id: b.dataset.revoke });
+        mlog(r.ok ? `Device revoked ${b.dataset.revoke}` : `Revoke failed`, r.ok ? "info" : "error");
+        await refreshMobile();
+      };
+    });
+  }
+  async function refreshMobile() {
+    if (!window.hub?.mobile) return;
+    const s = await window.hub.mobile.status();
+    setMobPill(!!s.running);
+    if ($("mob-port") && s.port) $("mob-port").value = s.port;
+    if ($("mob-policy-enabled")) $("mob-policy-enabled").checked = !!(s.policy && s.policy.mobile_enabled);
+    paintDevices(s.devices || []);
+    // Reachable URL hint = first non-loopback IPv4
+    try {
+      const lan = await window.hub.mobile.lanIps();
+      const ip  = (lan.ips || [])[0]?.address || "localhost";
+      if ($("mob-url")) $("mob-url").value = s.running ? `https://${ip}:${s.port}/m/` : "(gateway stopped)";
+    } catch (_) {}
+  }
+  if ($("mob-start")) $("mob-start").onclick = async () => {
+    const port = +($("mob-port")?.value || 8443);
+    mlog(`Starting mobile gateway on port ${port}…`, "info");
+    const r = await window.hub.mobile.start({ port });
+    mlog(r.ok ? `Gateway started on :${r.port}` : `Start failed: ${r.reason}`, r.ok ? "info" : "error");
+    await refreshMobile();
+  };
+  if ($("mob-stop")) $("mob-stop").onclick = async () => {
+    const r = await window.hub.mobile.stop();
+    mlog(r.ok ? "Gateway stopped" : `Stop failed: ${r.reason}`, r.ok ? "info" : "error");
+    await refreshMobile();
+  };
+  if ($("mob-refresh")) $("mob-refresh").onclick = refreshMobile;
+  if ($("mob-pair")) $("mob-pair").onclick = async () => {
+    const role = $("mob-role")?.value || "viewer";
+    const r = await window.hub.mobile.createPairingToken({ role });
+    if (!r.ok) return mlog(`Pairing failed: ${r.reason}`, "error");
+    $("mob-qr-wrap").style.display = "flex";
+    if (r.qrDataUrl) $("mob-qr-img").src = r.qrDataUrl;
+    else             $("mob-qr-img").style.display = "none";
+    $("mob-qr-token").textContent = r.token;
+    $("mob-qr-exp").textContent   = new Date(r.expiresAt).toLocaleTimeString();
+    $("mob-qr-url").textContent   = r.url;
+    mlog(`Pairing QR generated for role=${role} (expires ${$("mob-qr-exp").textContent})`, "info");
+  };
+  if ($("mob-policy-enabled")) $("mob-policy-enabled").onchange = async (e) => {
+    const r = await window.hub.mobile.setPolicy({ mobile_enabled: e.target.checked });
+    mlog(r.ok ? `Policy mobile_enabled=${e.target.checked}` : `Policy update failed`, r.ok ? "info" : "error");
+  };
+  refreshMobile();
+  setInterval(refreshMobile, 5000);
 }
 
 // =====================================================================

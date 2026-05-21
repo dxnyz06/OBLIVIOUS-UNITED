@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#05060a" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self' wss: https:;" />
+  <title>OBLIVIOUS · MOBILE</title>
+  <link rel="stylesheet" href="/m/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="brand">OBLIVIOUS <span class="brand-dim">MOBILE</span></h1>
+    <div class="topbar-meta">
+      <span class="dot" id="ws-dot"></span>
+      <span id="ws-label">offline</span>
+      <button id="settings-btn" class="btn-tiny" data-testid="m-settings" hidden>⚙</button>
+      <button id="logout-btn"   class="btn-tiny" data-testid="m-logout"   hidden>LOG OUT</button>
+    </div>
+  </header>
+
+  <!-- PAIRING / LOGIN SCREEN -->
+  <section id="screen-pair" class="screen">
+    <h2 class="screen-title">PAIRING</h2>
+    <p class="screen-sub">Enter the one-shot pairing token issued by the Hub (scan a QR or paste it manually).</p>
+    <form id="pair-form">
+      <label class="row">
+        <span>Pairing Token</span>
+        <input type="text" id="pair-token" required autocomplete="off" autocapitalize="none" autocorrect="off" data-testid="m-pair-token" />
+      </label>
+      <label class="row">
+        <span>Device Name</span>
+        <input type="text" id="pair-name" placeholder="iPhone 15 / Pixel 8 / …" data-testid="m-pair-name" />
+      </label>
+      <button type="submit" class="btn-primary" data-testid="m-pair-submit">PAIR DEVICE</button>
+      <div class="msg" id="pair-msg"></div>
+    </form>
+    <details class="returning">
+      <summary>Already paired? Sign in with credentials</summary>
+      <form id="signin-form">
+        <label class="row"><span>Device ID</span><input type="text" id="si-id" autocomplete="off" data-testid="m-si-id" /></label>
+        <label class="row"><span>Secret</span><input type="password" id="si-secret" autocomplete="off" data-testid="m-si-secret" /></label>
+        <button class="btn-secondary" type="submit" data-testid="m-si-submit">SIGN IN</button>
+      </form>
+    </details>
+  </section>
+
+  <!-- DASHBOARD -->
+  <main id="screen-dash" class="screen" hidden>
+    <section class="card" id="card-account">
+      <div class="card-h">ACCOUNT</div>
+      <div class="kv"><span>Balance</span><b id="acc-balance">—</b></div>
+      <div class="kv"><span>Equity</span><b id="acc-equity">—</b></div>
+      <div class="kv"><span>Symbol</span><b id="acc-symbol">—</b></div>
+      <div class="kv"><span>Spread</span><b id="acc-spread">—</b></div>
+    </section>
+
+    <section class="card" id="card-decision">
+      <div class="card-h">DECISION ENGINE</div>
+      <div class="kv"><span>Bias</span><b id="dec-bias">—</b></div>
+      <div class="kv"><span>Confidence</span><b id="dec-conf">—</b></div>
+      <div class="kv"><span>Signal</span><b id="dec-sig">—</b></div>
+      <div class="row-cta">
+        <button class="btn-warn" data-op="hold" data-enable="1" data-testid="m-hold-on">HOLD ON</button>
+        <button class="btn-secondary" data-op="hold" data-enable="0" data-testid="m-hold-off">HOLD OFF</button>
+      </div>
+    </section>
+
+    <section class="card" id="card-positions">
+      <div class="card-h">ACTIVE POSITIONS <span class="badge" id="pos-count">0</span></div>
+      <div id="positions-list" class="list">
+        <div class="empty">no active positions</div>
+      </div>
+    </section>
+
+    <section class="card" id="card-pending">
+      <div class="card-h">PENDING ORDERS <span class="badge" id="pen-count">0</span></div>
+      <div id="pending-list" class="list">
+        <div class="empty">no pending orders</div>
+      </div>
+    </section>
+
+    <section class="card" id="card-news">
+      <div class="card-h">NEXT NEWS</div>
+      <div id="news-next">awaiting feed…</div>
+    </section>
+
+    <section class="card" id="card-log">
+      <div class="card-h">LOG</div>
+      <div id="log-stream" class="log"></div>
+    </section>
+  </main>
+
+  <!-- SETTINGS DRAWER — admin-only step-up flow for API key management -->
+  <section id="screen-settings" class="screen" hidden>
+    <button id="settings-back" class="btn-tiny" data-testid="m-settings-back" style="margin-bottom:10px;">← BACK</button>
+    <h2 class="screen-title">SETTINGS</h2>
+
+    <section class="card" id="card-totp">
+      <div class="card-h">TOTP STEP-UP <span class="badge" id="totp-state">—</span></div>
+      <p class="screen-sub" style="margin:0 0 8px;">
+        Required before any sensitive admin action (API key update). Scan the
+        QR with Aegis / Google Authenticator / 1Password / Authy, then enter
+        the current 6-digit code to activate.
+      </p>
+      <div id="totp-setup-wrap" hidden>
+        <div class="totp-qr-block">
+          <img id="totp-qr-img" class="mob-qr-img" alt="TOTP QR" />
+          <div class="kv"><span>Secret</span><b id="totp-secret">—</b></div>
+        </div>
+        <label class="row">
+          <span>Current 6-digit code</span>
+          <input type="text" id="totp-confirm-code" inputmode="numeric" pattern="\d{6}" maxlength="6" data-testid="m-totp-code" />
+        </label>
+        <button class="btn-primary" id="totp-confirm-btn" data-testid="m-totp-confirm">CONFIRM &amp; ACTIVATE</button>
+      </div>
+      <div class="row-cta">
+        <button class="btn-secondary" id="totp-enroll-btn"  data-testid="m-totp-enroll">ENROLL TOTP</button>
+        <button class="btn-warn"      id="totp-disable-btn" data-testid="m-totp-disable" hidden>DISABLE</button>
+      </div>
+      <div class="msg" id="totp-msg"></div>
+    </section>
+
+    <section class="card" id="card-apikey">
+      <div class="card-h">UPDATE API KEY</div>
+      <p class="screen-sub" style="margin:0 0 8px;">
+        Provider keys are encrypted in the operator vault. A fresh TOTP code
+        is required to authorise this update — TOTP must be enrolled above.
+      </p>
+      <form id="key-form">
+        <label class="row">
+          <span>Provider</span>
+          <select id="key-provider" data-testid="m-key-provider">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="google">Google (Gemini)</option>
+            <option value="xai">xAI (Grok)</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="qwen">Qwen</option>
+            <option value="perplexity">Perplexity</option>
+            <option value="bookmap">Bookmap (L2)</option>
+          </select>
+        </label>
+        <label class="row">
+          <span>New API key</span>
+          <input type="password" id="key-value" autocomplete="off" data-testid="m-key-value" />
+        </label>
+        <label class="row">
+          <span>TOTP code (step-up)</span>
+          <input type="text" id="key-stepup" inputmode="numeric" pattern="\d{6}" maxlength="6" autocomplete="off" data-testid="m-key-stepup" />
+        </label>
+        <button class="btn-primary" type="submit" data-testid="m-key-submit">SAVE KEY</button>
+      </form>
+      <div class="msg" id="key-msg"></div>
+    </section>
+  </section>
+
+  <script src="/m/static/app.js"></script>
+</body>
+</html>

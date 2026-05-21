@@ -24,7 +24,12 @@ const ZmqBridge      = require("./services/ZmqBridge");
 const Telemetry      = require("./services/Telemetry");
 const SecureBoot     = require("./services/SecureBoot");
 const KeyVault       = require("./services/KeyVault");
+const SshAgent       = require("./services/SshAgent");
+const VpsProfileStore = require("./services/VpsProfileStore");
+const DeviceRegistry  = require("./services/DeviceRegistry");
+const MobileGateway   = require("./services/MobileGateway");
 const passwordPrompt = require("./security/password-prompt");
+let _qrcode = null; try { _qrcode = require("qrcode"); } catch (_) {}
 
 const HUB_HOST     = "127.0.0.1";
 const ZMQ_REQ_PORT = +process.env.ZMQ_REQ_PORT  || 5555;
@@ -199,59 +204,16 @@ async function bootServices() {
     telemetry.emit("hub:news",       newsEngine.snapshot());
   });
   bookmap.on("snapshot", (snap) => {
-    // Aggregated UI snapshot is for the renderer and back-compat
-    // multi-symbol consumers. The MQ4 side consumes only the
-    // per-symbol decision frame emitted on `bookmap:decision` below
-    // (spec-shaped envelope). Both go on the same topic
-    // (`oblivious.bookmap`) but with different payload shapes —
-    // AI_HandleBookmap is robust to either.
     zmq.publishBookmap(snap);
     decision.onBookmap(snap);
     telemetry.emit("hub:bookmap",  bookmap.snapshot());
     telemetry.emit("hub:decision", decision.snapshot());
   });
-  // Per-symbol live orderflow decision — the OFFICIAL envelope the
-  // EA consumes for g_of_* updates. Spec shape:
-  //   { topic, symbol, timestamp, sequence, fresh, stale, age_ms, of_context }
+  // Stream-3 fast-path: every fresh per-symbol orderflow decision is
+  // forwarded RAW to the EA (topic `oblivious.decision`) so the MQ4
+  // side can react without first parsing the heavy `bookmap` snapshot.
   bookmap.on("decision", (frame) => {
-    try {
-      const sym = frame?.symbol || "";
-      const dec = frame?.decision || {};
-      const ts  = Number(dec.last_update_ts) || Number(dec.ts) || Date.now();
-      const ageMs = Math.max(0, Date.now() - ts);
-      const fresh = Boolean(dec.fresh) && ageMs < 5000;
-      const envelope = {
-        topic:           "oblivious.bookmap",
-        symbol:          sym,
-        timestamp:       ts,
-        sequence:        Number(dec.sequence) || 0,
-        fresh,
-        stale:           !fresh,
-        age_ms:          ageMs,
-        of_context: {
-          of_bias:             ofBiasNum(dec.of_bias),
-          of_confidence:       round3((Number(dec.of_confidence) || 0) / 100),
-          of_signal:           dec.of_signal || "NONE",
-          of_imbalance:        round3(dec.of_imbalance),
-          of_dom_pressure:     round3(domPressureNum(dec.of_dom_pressure)),
-          of_delta_shift:      round3(dec.of_delta_shift),
-          of_delta_divergence: round3(dec.of_delta_divergence),
-          of_absorption:       round3(dec.of_absorption),
-          of_exhaustion:       round3(dec.of_exhaustion),
-          of_iceberg_side:     icebergSideNum(dec.of_iceberg_side),
-          of_iceberg_strength: round3(dec.of_iceberg_strength),
-          of_stop_activity:    round3(dec.of_stop_activity),
-          of_sweep_signal:     sweepSignalNum(dec.of_sweep_signal),
-          of_trap_signal:      sweepSignalNum(dec.of_trap_signal),
-          of_hold_continue:    round3(dec.of_hold_continue),
-          of_cancel_signal:    round3(dec.of_cancel_signal),
-          of_execution_danger: round3(Math.min(1,
-            (Number(dec.of_exhaustion)  || 0) * 0.45 +
-            (Number(dec.of_cancel_signal) || 0) * 0.55)),
-        },
-      };
-      zmq.publishBookmap(envelope);
-    } catch (_) {}
+    try { zmq.publishDecision(frame); } catch (_) {}
   });
   zmq.on("context_push", (msg) => {
     decision.onContextPush(msg);
@@ -349,15 +311,150 @@ async function bootServices() {
   _refreshBal();
   setInterval(_refreshBal, 60_000);
 
-  return { keyVault, cache, newsEngine, providerRouter, bookmap, decision, zmq, telemetry };
+  return { keyVault, cache, newsEngine, providerRouter, bookmap, decision, zmq, telemetry,
+           sshAgent: new SshAgent({ telemetry }),
+           vpsProfile: new VpsProfileStore({
+             file:       path.join(
+               (secureBootSnapshot_loc && secureBootSnapshot_loc.configDir) ||
+               process.env.OBLIVIOUS_CONFIG_DIR ||
+               path.join(__dirname, "..", "app"),
+               "vps.profile.enc"),
+             passphrase: keyVault.passphrase || "__dev_bypass__",
+             telemetry,
+           }),
+           deviceRegistry: new DeviceRegistry({
+             file:       path.join(
+               (secureBootSnapshot_loc && secureBootSnapshot_loc.configDir) ||
+               process.env.OBLIVIOUS_CONFIG_DIR ||
+               path.join(__dirname, "..", "app"),
+               "devices.registry.enc"),
+             passphrase: keyVault.passphrase || "__dev_bypass__",
+             telemetry,
+           }) };
 }
 
 function isDevEnvironment() {
-  return !app.isPackaged || process.env.OBLIVIOUS_DEV === "1";
+   // DEV mode is enabled when ANY of these is true:
+   //   • app is not packaged (running via `electron .`),
+   //   • OBLIVIOUS_DEV=1 is exported,
+   //   • the DEV unlock token was sent remotely (set at runtime).
+   if (process.env.OBLIVIOUS_MODE === "vps") return _remoteDevUnlocked;
+   if (!app.isPackaged) return true;
+   if (process.env.OBLIVIOUS_DEV === "1") return true;
+   return _remoteDevUnlocked;
+}
+
+// Mutable runtime flag — the DEV instance can flip this on a VPS-mode
+// peer via a signed REQ message (handled in registerIpc → hub:setDevUnlock).
+let _remoteDevUnlocked = false;
+function deploymentMode() {
+   if (process.env.OBLIVIOUS_MODE === "vps") return "vps";
+   if (!app.isPackaged || process.env.OBLIVIOUS_DEV === "1") return "dev";
+   return "client";
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MOBILE GATEWAY bootstrap + command bus + snapshot provider
+// ═══════════════════════════════════════════════════════════════════
+async function startMobileGateway({ port } = {}) {
+  if (!services) throw new Error("services_not_ready");
+  // Load registry from disk (encrypted with same passphrase as the vault).
+  await services.deviceRegistry.load();
+
+  // Build the command bus — every action mobile devices can trigger.
+  // Reuses the SAME code paths the desktop UI uses (publishCommand,
+  // vault:setKey, etc.) so authorisation rules stay consistent.
+  const commandBus = {
+    async closePosition(ticket) {
+      const t = Number(ticket);
+      if (!t || !Number.isFinite(t)) return { ok: false, reason: "bad_ticket" };
+      services.zmq.publishCommand({
+        op: "CLOSE_POSITION", ticket: t,
+        owner: "MobileGateway", magic: 0, sym: "",
+        comment: "OBLIVIOUS-Mobile-Close",
+        corr: crypto.randomUUID(),
+      });
+      services.telemetry.log("info", "Mobile", `CLOSE_POSITION ticket=${t}`);
+      return { ok: true };
+    },
+    async cancelPending(ticket) {
+      const t = Number(ticket);
+      if (!t || !Number.isFinite(t)) return { ok: false, reason: "bad_ticket" };
+      services.zmq.publishCommand({
+        op: "CANCEL_PENDING", ticket: t,
+        owner: "MobileGateway", magic: 0, sym: "",
+        comment: "OBLIVIOUS-Mobile-Cancel",
+        corr: crypto.randomUUID(),
+      });
+      services.telemetry.log("info", "Mobile", `CANCEL_PENDING ticket=${t}`);
+      return { ok: true };
+    },
+    async hold({ symbol, enable }) {
+      services.zmq.publishCommand({
+        op: "HOLD", sym: String(symbol || "").toUpperCase(),
+        enable: !!enable, owner: "MobileGateway",
+        corr: crypto.randomUUID(),
+      });
+      services.telemetry.log("info", "Mobile", `HOLD ${symbol || "*"}=${!!enable}`);
+      return { ok: true };
+    },
+    async healthCheck() {
+      return { ok: true, ts: Date.now(),
+        bridge: services.zmq.snapshot(),
+        bookmap: services.bookmap.snapshot() };
+    },
+    async restartHub() {
+      services.telemetry.log("warn", "Mobile", "RESTART_HUB requested by admin device");
+      setTimeout(() => { try { app.relaunch(); app.exit(0); } catch (_) {} }, 250);
+      return { ok: true, restarting: true };
+    },
+    async updateApiKey({ provider, key }) {
+      if (!provider || !key) return { ok: false, reason: "missing_fields" };
+      const name = String(provider).toLowerCase();
+      if (!services.keyVault.listProviders().includes(name)) return { ok: false, reason: "unknown_provider" };
+      if (!services.keyVault.passphrase) return { ok: false, reason: "vault_locked" };
+      await services.keyVault.setProviderKey(name, key);
+      services.providerRouter.reloadKeys();
+      services.telemetry.log("info", "Mobile", `Vault updated for ${name} (len=${key.length})`);
+      return { ok: true };
+    },
+  };
+
+  // Snapshot provider — single payload pushed every 1s to all WS clients.
+  const snapshotProvider = () => {
+    const ctx = services.zmq.snapshot()?.lastContext || {};
+    return {
+      bridge:    services.zmq.snapshot(),
+      news:      services.newsEngine.snapshot(),
+      providers: services.providerRouter.snapshot(),
+      bookmap:   services.bookmap.snapshot(),
+      decision:  services.decision.snapshot(),
+      account: {
+        balance: ctx.balance, equity: ctx.equity, margin: ctx.margin,
+        free_margin: ctx.free_margin, spread: ctx.spread,
+        symbol: ctx.sym || ctx.symbol, tpsl_mode: ctx.tpsl_mode,
+      },
+      positions: Array.isArray(ctx.positions) ? ctx.positions : [],
+      pending:   Array.isArray(ctx.pending)   ? ctx.pending   : [],
+      logs:      services.telemetry.recent().slice(-30),
+      env:       { dev: isDevEnvironment(), mode: deploymentMode() },
+    };
+  };
+
+  // Stop & rebuild if already running (port change support).
+  if (services.mobileGateway) { try { services.mobileGateway.stop(); } catch (_) {} }
+  const gw = new MobileGateway({
+    port: +port || +process.env.OBLIVIOUS_MOBILE_PORT || 8443,
+    registry: services.deviceRegistry,
+    commandBus, snapshotProvider,
+    telemetry: services.telemetry,
+  });
+  await gw.start();
+  services.mobileGateway = gw;
+  return gw;
 }
 
 function registerIpc() {
-  // ---- snapshot ----
   ipcMain.handle("hub:getSnapshot", () => {
     if (!services) return null;
     return {
@@ -368,7 +465,7 @@ function registerIpc() {
       decision:  services.decision.snapshot(),
       secure:    secureBootSnapshot,
       logs:      services.telemetry.recent().slice(-50),
-      env:       { dev: isDevEnvironment() },
+      env:       { dev: isDevEnvironment(), mode: deploymentMode() },
     };
   });
 
@@ -675,6 +772,233 @@ function registerIpc() {
     services?.telemetry.log("info", "VPS", `Secure runtime token issued: ${runtimeId}`);
     return { ok: true, runtimeId, issuedAt: new Date().toISOString() };
   });
+
+  // ── DEV → VPS REMOTE DEV-UNLOCK ────────────────────────────────────
+  ipcMain.handle("hub:setDevUnlock", (_e, { enable, signature, payload }) => {
+    if (deploymentMode() !== "vps") return { ok: false, reason: "not_vps_mode" };
+    try {
+      const valid = SecureBoot.verifyDevUnlockToken
+        ? SecureBoot.verifyDevUnlockToken(payload, signature)
+        : false;
+      if (!valid) return { ok: false, reason: "invalid_signature" };
+    } catch (err) {
+      return { ok: false, reason: "verify_failed: " + err.message };
+    }
+    _remoteDevUnlocked = !!enable;
+    services?.telemetry.log("warn", "VPS",
+      `Remote DEV unlock ${_remoteDevUnlocked ? "GRANTED" : "REVOKED"} via signed token`);
+    if (mainWindow) mainWindow.webContents.send("hub:devModeChanged",
+      { dev: isDevEnvironment(), mode: deploymentMode() });
+    return { ok: true, dev: isDevEnvironment() };
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // SSH AUTOMATIC — keypair, install, test, profile (DEV ONLY)
+  // ═══════════════════════════════════════════════════════════════════
+  const devOnly = (fn) => async (...args) => {
+    if (!isDevEnvironment()) return { ok: false, reason: "dev_only" };
+    if (!services?.sshAgent) return { ok: false, reason: "ssh_unavailable" };
+    return fn(...args);
+  };
+
+  ipcMain.handle("ssh:status", devOnly(async () => ({
+    ok: true,
+    hasKeypair: services.sshAgent.hasKeypair(),
+    privateKeyPath: services.sshAgent.defaultPrivateKeyPath(),
+    publicKeyPath:  services.sshAgent.defaultPublicKeyPath(),
+    sshDir: services.sshAgent.sshDir(),
+  })));
+
+  ipcMain.handle("ssh:generateKeypair", devOnly(async (_e, { overwrite } = {}) =>
+    services.sshAgent.generateKeypair({ overwrite })));
+
+  ipcMain.handle("ssh:installKey", devOnly(async (_e, opts) =>
+    services.sshAgent.installPublicKey(opts || {})));
+
+  ipcMain.handle("ssh:testConnection", devOnly(async (_e, opts) =>
+    services.sshAgent.testConnection(opts || {})));
+
+  // ── Encrypted profile load/save ──────────────────────────────────
+  ipcMain.handle("ssh:loadProfile", devOnly(async () => {
+    const p = await services.vpsProfile.load();
+    return { ok: true, profile: p };
+  }));
+
+  ipcMain.handle("ssh:saveProfile", devOnly(async (_e, profile) => {
+    // Auto-fill key paths from the agent if missing so the renderer never
+    // has to keep them in sync manually.
+    const filled = {
+      ...profile,
+      privateKeyPath: profile.privateKeyPath || services.sshAgent.defaultPrivateKeyPath(),
+      publicKeyPath:  profile.publicKeyPath  || services.sshAgent.defaultPublicKeyPath(),
+      updatedAt:      new Date().toISOString(),
+    };
+    delete filled.bootstrapPassword;
+    await services.vpsProfile.save(filled);
+    return { ok: true, profile: services.vpsProfile.current() };
+  }));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DEPLOY / REMOTE ACTIONS  (DEV ONLY, uses pinned-host SSH)
+  // ═══════════════════════════════════════════════════════════════════
+  function profileOr(args) {
+    const cur = services.vpsProfile.current() || {};
+    return { host: args?.host || cur.host,
+             port: args?.port || cur.port || 22,
+             user: args?.user || cur.user,
+             remoteInstallPath: args?.remoteInstallPath || cur.remoteInstallPath ||
+                                "C:\\\\OBLIVIOUS-VPS\\\\app" };
+  }
+
+  ipcMain.handle("deploy:bundle", devOnly(async (_e, args) => {
+    const p = profileOr(args);
+    const cur = services.vpsProfile.current() || {};
+    // Local bundle dir convention: <repo or installed>/OBLIVIOUS-VPS/
+    const local = args?.localBundleDir || cur.localBundleDir ||
+                  path.join(__dirname, "..", "OBLIVIOUS-VPS");
+    const remote = (cur.remoteRoot || "C:\\\\OBLIVIOUS-VPS").replace(/\\/g, "/");
+    const r = await services.sshAgent.uploadDir({
+      host: p.host, port: p.port, user: p.user,
+      localDir: local, remoteDir: remote,
+    });
+    if (r.ok) await services.vpsProfile.patch({
+      lastDeploy: { at: new Date().toISOString(), files: r.uploaded },
+    });
+    return r;
+  }));
+
+  ipcMain.handle("deploy:pushConfig", devOnly(async (_e, args) => {
+    const p = profileOr(args);
+    const cur = services.vpsProfile.current() || {};
+    const localCfg  = args?.localConfigPath  || cur.localConfigPath  ||
+                      path.join(__dirname, "..", "app", "config.enc");
+    const remoteCfg = (cur.remoteInstallPath || "C:/OBLIVIOUS-VPS/app")
+                        .replace(/\\/g, "/") + "/../config/config.enc";
+    return services.sshAgent.uploadFile({
+      host: p.host, port: p.port, user: p.user,
+      localPath: localCfg, remotePath: remoteCfg,
+    });
+  }));
+
+  ipcMain.handle("deploy:pushLicense", devOnly(async (_e, args) => {
+    const p = profileOr(args);
+    const cur = services.vpsProfile.current() || {};
+    const localLic = args?.localLicensePath || cur.localLicensePath ||
+                      path.join(__dirname, "..", "app", "license.lic");
+    const localPub = args?.localPubKeyPath  || cur.localPubKeyPath  ||
+                      path.join(__dirname, "..", "app", "public_key.pem");
+    const remoteRoot = (cur.remoteInstallPath || "C:/OBLIVIOUS-VPS/app")
+                        .replace(/\\/g, "/") + "/../licenses";
+    const r1 = await services.sshAgent.uploadFile({
+      host: p.host, port: p.port, user: p.user,
+      localPath: localLic, remotePath: remoteRoot + "/license.lic",
+    });
+    if (!r1.ok) return r1;
+    const r2 = await services.sshAgent.uploadFile({
+      host: p.host, port: p.port, user: p.user,
+      localPath: localPub, remotePath: remoteRoot + "/public_key.pem",
+    });
+    return r2;
+  }));
+
+  ipcMain.handle("deploy:restartHub", devOnly(async (_e, args) =>
+    services.sshAgent.restartHub(profileOr(args))));
+
+  ipcMain.handle("deploy:stopHub", devOnly(async (_e, args) =>
+    services.sshAgent.stopHub(profileOr(args))));
+
+  ipcMain.handle("deploy:healthCheck", devOnly(async (_e, args) => {
+    const r = await services.sshAgent.healthCheck(profileOr(args));
+    if (r.ok) await services.vpsProfile.patch({ lastStatus: { ...r, at: new Date().toISOString() } });
+    return r;
+  }));
+
+  ipcMain.handle("deploy:pullLogs", devOnly(async (_e, args) => {
+    const p = profileOr(args);
+    const localDir = args?.localDir || path.join(os.homedir(), "OBLIVIOUS-VPS-LOGS");
+    return services.sshAgent.pullLogs(p, { localDir });
+  }));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // MOBILE GATEWAY — direct VPS↔Mobile encrypted control plane
+  // ═══════════════════════════════════════════════════════════════════
+  ipcMain.handle("mobile:status", () => {
+    const gw = services?.mobileGateway;
+    return {
+      ok: true,
+      running:   !!(gw && gw._server),
+      port:      gw ? gw.port : null,
+      sockets:   gw ? gw._sockets.size : 0,
+      tokens:    gw ? gw._pairingTokens.size : 0,
+      policy:    services?.deviceRegistry?.policy?.() || { mobile_enabled: false },
+      devices:   services?.deviceRegistry?.list?.() || [],
+    };
+  });
+
+  ipcMain.handle("mobile:start", async (_e, { port } = {}) => {
+    if (!services) return { ok: false, reason: "not_ready" };
+    try {
+      await startMobileGateway({ port });
+      return { ok: true, port: services.mobileGateway.port };
+    } catch (err) {
+      return { ok: false, reason: err.message };
+    }
+  });
+
+  ipcMain.handle("mobile:stop", async () => {
+    try {
+      services?.mobileGateway?.stop();
+      if (services) services.mobileGateway = null;
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: err.message };
+    }
+  });
+
+  ipcMain.handle("mobile:createPairingToken", async (_e, opts = {}) => {
+    if (!services?.mobileGateway) return { ok: false, reason: "gateway_not_running" };
+    const role = (opts.role === "admin") ? "admin" : "viewer";
+    const ttlMs = Math.max(60_000, Math.min(60 * 60_000, +opts.ttlMs || 10 * 60_000));
+    const tok = services.mobileGateway.newPairingToken({ role, ttlMs, hint: opts.hint || "" });
+
+    // Build a deep-link URL hint. Host preference: explicit > VPS profile > local hostname.
+    const cur  = services.vpsProfile?.current?.() || {};
+    const host = opts.host || cur.host || os.hostname() || "localhost";
+    const url  = `https://${host}:${services.mobileGateway.port}/m/?t=${tok.token}`;
+
+    let qrDataUrl = null;
+    if (_qrcode) {
+      try { qrDataUrl = await _qrcode.toDataURL(url, { errorCorrectionLevel: "M", margin: 1, scale: 6 }); } catch (_) {}
+    }
+    return { ok: true, ...tok, url, qrDataUrl, host };
+  });
+
+  ipcMain.handle("mobile:listDevices", () => {
+    return { ok: true, devices: services?.deviceRegistry?.list?.() || [] };
+  });
+
+  ipcMain.handle("mobile:revokeDevice", async (_e, { device_id }) => {
+    if (!services?.deviceRegistry) return { ok: false, reason: "not_ready" };
+    const ok = await services.deviceRegistry.revoke(device_id);
+    return { ok };
+  });
+
+  ipcMain.handle("mobile:setPolicy", async (_e, patch = {}) => {
+    if (!services?.deviceRegistry) return { ok: false, reason: "not_ready" };
+    await services.deviceRegistry.setPolicy({ mobile_enabled: !!patch.mobile_enabled });
+    return { ok: true, policy: services.deviceRegistry.policy() };
+  });
+
+  ipcMain.handle("mobile:lanIps", () => {
+    const out = [];
+    const ifaces = os.networkInterfaces();
+    for (const name of Object.keys(ifaces)) {
+      for (const a of ifaces[name] || []) {
+        if (a.family === "IPv4" && !a.internal) out.push({ iface: name, address: a.address });
+      }
+    }
+    return { ok: true, ips: out };
+  });
 }
 
 app.whenReady().then(async () => {
@@ -686,45 +1010,18 @@ app.whenReady().then(async () => {
     app.exit(1);
     return;
   }
+  // Auto-start MobileGateway on VPS deployments (or when explicitly enabled).
+  if (deploymentMode() === "vps" || process.env.OBLIVIOUS_MOBILE === "1") {
+    try { await startMobileGateway({}); }
+    catch (err) { services.telemetry.log("error", "MobileGateway", `start failed: ${err.message}`); }
+  }
   createWindow();
 });
-
-// ── Numeric normalisation helpers (used by the per-symbol
-// `oblivious.bookmap` envelope publisher above). Mirror the
-// converters in DecisionEngine so the EA always sees plain
-// numbers (the MQ4 parser is JSON-aware but only for flat
-// strings/numbers/bools — strings like "bullish" / "bid_heavy"
-// would otherwise become 0 after StringToDouble).
-function round3(x) { x = Number(x); return Number.isFinite(x) ? Math.round(x * 1000) / 1000 : 0; }
-function ofBiasNum(s) {
-  if (typeof s === "number") return Math.max(-1, Math.min(1, s));
-  s = String(s || "").toLowerCase();
-  if (s === "bullish" || s === "bull" || s === "up")   return 1;
-  if (s === "bearish" || s === "bear" || s === "down") return -1;
-  return 0;
-}
-function domPressureNum(s) {
-  s = String(s || "").toLowerCase();
-  if (s === "bid_heavy") return 1;
-  if (s === "ask_heavy") return -1;
-  return 0;
-}
-function icebergSideNum(s) {
-  s = String(s || "").toLowerCase();
-  if (s === "bid" || s === "buy")  return 1;
-  if (s === "ask" || s === "sell") return -1;
-  return 0;
-}
-function sweepSignalNum(s) {
-  s = String(s || "").toLowerCase();
-  if (s === "up")   return 1;
-  if (s === "down") return -1;
-  return 0;
-}
 
 app.on("window-all-closed", async () => {
   // Release ZMQ ports BEFORE quitting so the next `npm start` won't hit EADDRINUSE.
   if (services) {
+    try { services.mobileGateway?.stop?.(); } catch (e) { /* noop */ }
     try { await services.zmq?.stop?.(); } catch (e) { /* noop */ }
     try { services.newsEngine?.stop?.(); } catch (e) { /* noop */ }
     try { services.bookmap?.stop?.();    } catch (e) { /* noop */ }

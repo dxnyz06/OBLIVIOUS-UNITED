@@ -5,14 +5,22 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "dev":   "electron . --enable-logging"
+    "dev": "cross-env OBLIVIOUS_DEV=1 electron . --enable-logging",
+    "start:vps": "cross-env OBLIVIOUS_MODE=vps electron .",
+    "build:dev": "cross-env OBLIVIOUS_DEV=1   electron-builder --config electron-builder.dev.json",
+    "build:vps": "cross-env OBLIVIOUS_MODE=vps electron-builder --config electron-builder.vps.json"
   },
   "dependencies": {
-    "dotenv":  "^16.4.5",
-    "ws":      "^8.18.0",
-    "zeromq":  "^6.0.0-beta.19"
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "qrcode": "^1.5.4",
+    "selfsigned": "^5.5.0",
+    "ssh2": "^1.17.0",
+    "ws": "^8.20.1",
+    "zeromq": "^6.0.0-beta.19"
   },
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "electron": "^28.3.3"
   },
   "engines": {

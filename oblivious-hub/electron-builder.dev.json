@@ -1,0 +1,32 @@
+{
+  "appId": "ai.oblivious.hub.dev",
+  "productName": "Oblivious Hub (DEV)",
+  "directories": {
+    "output": "dist/dev",
+    "buildResources": "build"
+  },
+  "files": [
+    "src/**/*",
+    "OBLIVIOUS_DECISION_SUBSCRIBER.mq4",
+    "PATCH_MQ4_positions_payload.mq4",
+    "package.json"
+  ],
+  "extraResources": [
+    { "from": "bookmap-bridge/", "to": "bookmap-bridge" }
+  ],
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "artifactName": "OBLIVIOUS-HUB-DEV-${version}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "shortcutName": "Oblivious Hub (DEV)"
+  },
+  "publish": null,
+  "extraMetadata": {
+    "deploymentMode": "dev"
+  }
+}

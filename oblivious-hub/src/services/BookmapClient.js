@@ -75,10 +75,6 @@ class BookmapClient extends EventEmitter {
     this._lastEmitMs    = 0;
     this._coalesceTimer = null;
     this._lastDecisionMs = 0;
-    // Per-symbol monotonic decision sequence — the EA uses this to
-    // detect out-of-order or replayed PUB frames and to flag stale
-    // cache when no new sequence arrives within OF_FRESH_TTL_SEC.
-    this._seq           = {};          // {symbol: integer}
   }
 
   // ── Public accessors ─────────────────────────────────────────────
@@ -499,16 +495,10 @@ class BookmapClient extends EventEmitter {
       let cancelSignal = Math.min(1,
         ofExhaustion * 0.45 + spoofRisk * 0.25 + pullingScore * 0.30);
 
-      // Per-symbol monotonic sequence — bumped on every recompute
-      // so the MQ4 side can detect dropped / out-of-order frames.
-      this._seq[sym] = (this._seq[sym] || 0) + 1;
       const decision = {
         type:                "decision",
         symbol:              sym,
         ts:                  now,
-        sequence:            this._seq[sym],
-        last_update_ts:      now,
-        fresh:               true,
         of_bias:             bias,
         of_confidence:       conf,
         of_signal:           signal,
