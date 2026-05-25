@@ -249,7 +249,6 @@
               <button class="vps-tab-btn active" data-vps-tab="ssh"      data-testid="vps-tab-ssh">CONNECTION · SSH</button>
               <button class="vps-tab-btn"        data-vps-tab="access"   data-testid="vps-tab-access">ACCESS SECURITY</button>
               <button class="vps-tab-btn"        data-vps-tab="deploy"   data-testid="vps-tab-deploy">DEPLOY · REMOTE</button>
-              <button class="vps-tab-btn"        data-vps-tab="mobile"   data-testid="vps-tab-mobile">MOBILE DEVICES</button>
             </div>
 
             <!-- TAB 1: CONNECTION / SSH AUTOMATIC -->
@@ -326,69 +325,6 @@
                 </span>
               </div>
               <div class="vps-log" id="deploy-log"></div>
-            </div>
-
-            <!-- TAB 4: MOBILE DEVICES — direct VPS↔mobile encrypted control -->
-            <div class="vps-actions vps-tab-pane hidden" data-vps-pane="mobile">
-              <div class="vps-row vps-status-row">
-                <span>Mobile Gateway</span>
-                <span class="vps-status-pill" id="mob-status-pill">
-                  <span class="dot dot-down"></span><span>STOPPED</span>
-                </span>
-              </div>
-              <div class="vps-row"><span>Listen Port</span>
-                <input type="number" class="vps-input" id="mob-port" value="8443" data-testid="mob-port" />
-              </div>
-              <div class="vps-row"><span>Reachable URL <small class="dim">(LAN/WireGuard hosts)</small></span>
-                <input type="text" class="vps-input" id="mob-url" readonly data-testid="mob-url" />
-              </div>
-              <div class="vps-row vps-row-cta">
-                <button class="btn-cyan-outline" id="mob-start"   data-testid="mob-start">START GATEWAY</button>
-                <button class="btn-red-outline"  id="mob-stop"    data-testid="mob-stop">STOP GATEWAY</button>
-                <button class="btn-cyan-outline" id="mob-refresh" data-testid="mob-refresh">REFRESH</button>
-              </div>
-
-              <div class="vps-row">
-                <span>New Pairing</span>
-                <span style="display:flex; gap:6px; align-items:center;">
-                  <select id="mob-role" class="vps-input" style="width:auto" data-testid="mob-role">
-                    <option value="viewer">VIEWER (read-only)</option>
-                    <option value="admin">ADMIN (full control)</option>
-                  </select>
-                  <button class="btn-orange" id="mob-pair" data-testid="mob-pair">GENERATE QR</button>
-                </span>
-              </div>
-
-              <div class="mob-qr-wrap" id="mob-qr-wrap" style="display:none;">
-                <img id="mob-qr-img" class="mob-qr-img" alt="QR pairing" />
-                <div class="mob-qr-meta">
-                  <div><b>Token:</b> <code id="mob-qr-token"></code></div>
-                  <div><b>Expires:</b> <span id="mob-qr-exp"></span></div>
-                  <div><b>URL:</b> <code id="mob-qr-url"></code></div>
-                  <div class="dim">Scan with the mobile device on the same WireGuard/Tailscale network.</div>
-                </div>
-              </div>
-
-              <div class="vps-row vps-status-row" style="margin-top:8px;">
-                <span>Mobile Enabled</span>
-                <label class="mob-toggle">
-                  <input type="checkbox" id="mob-policy-enabled" data-testid="mob-policy-enabled" />
-                  <span>allow paired devices</span>
-                </label>
-              </div>
-
-              <div class="mob-devices-wrap">
-                <table class="prov-table mob-devices-table">
-                  <thead>
-                    <tr><th>NAME</th><th>PLATFORM</th><th>ROLE</th><th>STATUS</th><th>LAST SEEN</th><th>ACTION</th></tr>
-                  </thead>
-                  <tbody id="mob-devices-body">
-                    <tr class="empty-row"><td colspan="6">no devices paired yet</td></tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <div class="vps-log" id="mob-log"></div>
             </div>
 
             <div class="vps-disclaimer">

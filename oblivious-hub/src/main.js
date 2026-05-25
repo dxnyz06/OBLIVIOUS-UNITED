@@ -26,10 +26,7 @@ const SecureBoot     = require("./services/SecureBoot");
 const KeyVault       = require("./services/KeyVault");
 const SshAgent       = require("./services/SshAgent");
 const VpsProfileStore = require("./services/VpsProfileStore");
-const DeviceRegistry  = require("./services/DeviceRegistry");
-const MobileGateway   = require("./services/MobileGateway");
 const passwordPrompt = require("./security/password-prompt");
-let _qrcode = null; try { _qrcode = require("qrcode"); } catch (_) {}
 
 const HUB_HOST     = "127.0.0.1";
 const ZMQ_REQ_PORT = +process.env.ZMQ_REQ_PORT  || 5555;
@@ -321,15 +318,6 @@ async function bootServices() {
                "vps.profile.enc"),
              passphrase: keyVault.passphrase || "__dev_bypass__",
              telemetry,
-           }),
-           deviceRegistry: new DeviceRegistry({
-             file:       path.join(
-               (secureBootSnapshot_loc && secureBootSnapshot_loc.configDir) ||
-               process.env.OBLIVIOUS_CONFIG_DIR ||
-               path.join(__dirname, "..", "app"),
-               "devices.registry.enc"),
-             passphrase: keyVault.passphrase || "__dev_bypass__",
-             telemetry,
            }) };
 }
 
@@ -353,108 +341,8 @@ function deploymentMode() {
    return "client";
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// MOBILE GATEWAY bootstrap + command bus + snapshot provider
-// ═══════════════════════════════════════════════════════════════════
-async function startMobileGateway({ port } = {}) {
-  if (!services) throw new Error("services_not_ready");
-  // Load registry from disk (encrypted with same passphrase as the vault).
-  await services.deviceRegistry.load();
-
-  // Build the command bus — every action mobile devices can trigger.
-  // Reuses the SAME code paths the desktop UI uses (publishCommand,
-  // vault:setKey, etc.) so authorisation rules stay consistent.
-  const commandBus = {
-    async closePosition(ticket) {
-      const t = Number(ticket);
-      if (!t || !Number.isFinite(t)) return { ok: false, reason: "bad_ticket" };
-      services.zmq.publishCommand({
-        op: "CLOSE_POSITION", ticket: t,
-        owner: "MobileGateway", magic: 0, sym: "",
-        comment: "OBLIVIOUS-Mobile-Close",
-        corr: crypto.randomUUID(),
-      });
-      services.telemetry.log("info", "Mobile", `CLOSE_POSITION ticket=${t}`);
-      return { ok: true };
-    },
-    async cancelPending(ticket) {
-      const t = Number(ticket);
-      if (!t || !Number.isFinite(t)) return { ok: false, reason: "bad_ticket" };
-      services.zmq.publishCommand({
-        op: "CANCEL_PENDING", ticket: t,
-        owner: "MobileGateway", magic: 0, sym: "",
-        comment: "OBLIVIOUS-Mobile-Cancel",
-        corr: crypto.randomUUID(),
-      });
-      services.telemetry.log("info", "Mobile", `CANCEL_PENDING ticket=${t}`);
-      return { ok: true };
-    },
-    async hold({ symbol, enable }) {
-      services.zmq.publishCommand({
-        op: "HOLD", sym: String(symbol || "").toUpperCase(),
-        enable: !!enable, owner: "MobileGateway",
-        corr: crypto.randomUUID(),
-      });
-      services.telemetry.log("info", "Mobile", `HOLD ${symbol || "*"}=${!!enable}`);
-      return { ok: true };
-    },
-    async healthCheck() {
-      return { ok: true, ts: Date.now(),
-        bridge: services.zmq.snapshot(),
-        bookmap: services.bookmap.snapshot() };
-    },
-    async restartHub() {
-      services.telemetry.log("warn", "Mobile", "RESTART_HUB requested by admin device");
-      setTimeout(() => { try { app.relaunch(); app.exit(0); } catch (_) {} }, 250);
-      return { ok: true, restarting: true };
-    },
-    async updateApiKey({ provider, key }) {
-      if (!provider || !key) return { ok: false, reason: "missing_fields" };
-      const name = String(provider).toLowerCase();
-      if (!services.keyVault.listProviders().includes(name)) return { ok: false, reason: "unknown_provider" };
-      if (!services.keyVault.passphrase) return { ok: false, reason: "vault_locked" };
-      await services.keyVault.setProviderKey(name, key);
-      services.providerRouter.reloadKeys();
-      services.telemetry.log("info", "Mobile", `Vault updated for ${name} (len=${key.length})`);
-      return { ok: true };
-    },
-  };
-
-  // Snapshot provider — single payload pushed every 1s to all WS clients.
-  const snapshotProvider = () => {
-    const ctx = services.zmq.snapshot()?.lastContext || {};
-    return {
-      bridge:    services.zmq.snapshot(),
-      news:      services.newsEngine.snapshot(),
-      providers: services.providerRouter.snapshot(),
-      bookmap:   services.bookmap.snapshot(),
-      decision:  services.decision.snapshot(),
-      account: {
-        balance: ctx.balance, equity: ctx.equity, margin: ctx.margin,
-        free_margin: ctx.free_margin, spread: ctx.spread,
-        symbol: ctx.sym || ctx.symbol, tpsl_mode: ctx.tpsl_mode,
-      },
-      positions: Array.isArray(ctx.positions) ? ctx.positions : [],
-      pending:   Array.isArray(ctx.pending)   ? ctx.pending   : [],
-      logs:      services.telemetry.recent().slice(-30),
-      env:       { dev: isDevEnvironment(), mode: deploymentMode() },
-    };
-  };
-
-  // Stop & rebuild if already running (port change support).
-  if (services.mobileGateway) { try { services.mobileGateway.stop(); } catch (_) {} }
-  const gw = new MobileGateway({
-    port: +port || +process.env.OBLIVIOUS_MOBILE_PORT || 8443,
-    registry: services.deviceRegistry,
-    commandBus, snapshotProvider,
-    telemetry: services.telemetry,
-  });
-  await gw.start();
-  services.mobileGateway = gw;
-  return gw;
-}
-
 function registerIpc() {
+  // ---- snapshot ----
   ipcMain.handle("hub:getSnapshot", () => {
     if (!services) return null;
     return {
@@ -918,87 +806,6 @@ function registerIpc() {
     const localDir = args?.localDir || path.join(os.homedir(), "OBLIVIOUS-VPS-LOGS");
     return services.sshAgent.pullLogs(p, { localDir });
   }));
-
-  // ═══════════════════════════════════════════════════════════════════
-  // MOBILE GATEWAY — direct VPS↔Mobile encrypted control plane
-  // ═══════════════════════════════════════════════════════════════════
-  ipcMain.handle("mobile:status", () => {
-    const gw = services?.mobileGateway;
-    return {
-      ok: true,
-      running:   !!(gw && gw._server),
-      port:      gw ? gw.port : null,
-      sockets:   gw ? gw._sockets.size : 0,
-      tokens:    gw ? gw._pairingTokens.size : 0,
-      policy:    services?.deviceRegistry?.policy?.() || { mobile_enabled: false },
-      devices:   services?.deviceRegistry?.list?.() || [],
-    };
-  });
-
-  ipcMain.handle("mobile:start", async (_e, { port } = {}) => {
-    if (!services) return { ok: false, reason: "not_ready" };
-    try {
-      await startMobileGateway({ port });
-      return { ok: true, port: services.mobileGateway.port };
-    } catch (err) {
-      return { ok: false, reason: err.message };
-    }
-  });
-
-  ipcMain.handle("mobile:stop", async () => {
-    try {
-      services?.mobileGateway?.stop();
-      if (services) services.mobileGateway = null;
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, reason: err.message };
-    }
-  });
-
-  ipcMain.handle("mobile:createPairingToken", async (_e, opts = {}) => {
-    if (!services?.mobileGateway) return { ok: false, reason: "gateway_not_running" };
-    const role = (opts.role === "admin") ? "admin" : "viewer";
-    const ttlMs = Math.max(60_000, Math.min(60 * 60_000, +opts.ttlMs || 10 * 60_000));
-    const tok = services.mobileGateway.newPairingToken({ role, ttlMs, hint: opts.hint || "" });
-
-    // Build a deep-link URL hint. Host preference: explicit > VPS profile > local hostname.
-    const cur  = services.vpsProfile?.current?.() || {};
-    const host = opts.host || cur.host || os.hostname() || "localhost";
-    const url  = `https://${host}:${services.mobileGateway.port}/m/?t=${tok.token}`;
-
-    let qrDataUrl = null;
-    if (_qrcode) {
-      try { qrDataUrl = await _qrcode.toDataURL(url, { errorCorrectionLevel: "M", margin: 1, scale: 6 }); } catch (_) {}
-    }
-    return { ok: true, ...tok, url, qrDataUrl, host };
-  });
-
-  ipcMain.handle("mobile:listDevices", () => {
-    return { ok: true, devices: services?.deviceRegistry?.list?.() || [] };
-  });
-
-  ipcMain.handle("mobile:revokeDevice", async (_e, { device_id }) => {
-    if (!services?.deviceRegistry) return { ok: false, reason: "not_ready" };
-    const ok = await services.deviceRegistry.revoke(device_id);
-    return { ok };
-  });
-
-  ipcMain.handle("mobile:setPolicy", async (_e, patch = {}) => {
-    if (!services?.deviceRegistry) return { ok: false, reason: "not_ready" };
-    await services.deviceRegistry.setPolicy({ mobile_enabled: !!patch.mobile_enabled });
-    return { ok: true, policy: services.deviceRegistry.policy() };
-  });
-
-  ipcMain.handle("mobile:lanIps", () => {
-    const out = [];
-    const ifaces = os.networkInterfaces();
-    for (const name of Object.keys(ifaces)) {
-      for (const a of ifaces[name] || []) {
-        if (a.family === "IPv4" && !a.internal) out.push({ iface: name, address: a.address });
-      }
-    }
-    return { ok: true, ips: out };
-  });
 }
 
 app.whenReady().then(async () => {
@@ -1010,18 +817,12 @@ app.whenReady().then(async () => {
     app.exit(1);
     return;
   }
-  // Auto-start MobileGateway on VPS deployments (or when explicitly enabled).
-  if (deploymentMode() === "vps" || process.env.OBLIVIOUS_MOBILE === "1") {
-    try { await startMobileGateway({}); }
-    catch (err) { services.telemetry.log("error", "MobileGateway", `start failed: ${err.message}`); }
-  }
   createWindow();
 });
 
 app.on("window-all-closed", async () => {
   // Release ZMQ ports BEFORE quitting so the next `npm start` won't hit EADDRINUSE.
   if (services) {
-    try { services.mobileGateway?.stop?.(); } catch (e) { /* noop */ }
     try { await services.zmq?.stop?.(); } catch (e) { /* noop */ }
     try { services.newsEngine?.stop?.(); } catch (e) { /* noop */ }
     try { services.bookmap?.stop?.();    } catch (e) { /* noop */ }

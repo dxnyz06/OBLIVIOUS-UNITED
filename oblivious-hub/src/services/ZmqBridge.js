@@ -39,11 +39,7 @@ class ZmqBridge extends EventEmitter {
     this._pull  = null;
     this._running = false;
     this._eaSeenAt = 0;
-    this._lastPushTs = 0;
     this._lastContext = null;
-    // Serialize PUB sends: zeromq@6 requires one in-flight send at a time
-    // per socket, otherwise it throws "Socket is busy writing".
-    this._pubChain = Promise.resolve();
   }
 
   // ─────────── lifecycle ───────────
@@ -65,12 +61,8 @@ class ZmqBridge extends EventEmitter {
         await this._rep.bind(`tcp://${this.host}:${this.repPort}`);
         await this._pub.bind(`tcp://${this.host}:${this.pubPort}`);
         await this._pull.bind(`tcp://${this.host}:${this.pullPort}`);
-        // Fire-and-forget the receive loops, ma con `.catch` esplicito
-        // per non perdere errori silenziati (quello che ci ha bruciato prima).
-        this._loopRepV6().catch((e) =>
-          this.telemetry.log("error", "ZmqBridge", `REP loop crashed: ${e && e.stack || e}`));
-        this._loopPullV6().catch((e) =>
-          this.telemetry.log("error", "ZmqBridge", `PULL loop crashed: ${e && e.stack || e}`));
+        this._loopRepV6();
+        this._loopPullV6();
       } else {
         // zeromq@5 fallback
         this._rep  = zmq.socket("rep");
@@ -109,50 +101,29 @@ class ZmqBridge extends EventEmitter {
   // ─────────── inbound (EA → Hub) ───────────
 
   async _loopRepV6() {
-    this.telemetry.log("info", "ZmqBridge", `REP loop started on :${this.repPort}`);
-    // Use the canonical zeromq@6 async-iterator pattern: `for await (const msg of socket)`
-    // streams frames as they arrive and never silently hangs the way an
-    // explicit `await socket.receive()` loop can if one frame stalls.
-    try {
-      for await (const [raw] of this._rep) {
-        if (!this._running) break;
-        let reply;
-        try {
-          const msg = this._parse(raw);
-          reply = await this._handleReq(msg);
-        } catch (e) {
-          this.telemetry.log("warn", "ZmqBridge", `REP handler error: ${e.message}`);
-          reply = { ok: false, reason: "handler_error", error: e.message };
-        }
-        try {
-          await this._rep.send(JSON.stringify(reply));
-        } catch (e) {
-          this.telemetry.log("warn", "ZmqBridge", `REP send failed: ${e.message}`);
-        }
+    while (this._running && this._rep) {
+      try {
+        const [raw] = await this._rep.receive();
+        const msg = this._parse(raw);
+        const reply = await this._handleReq(msg);
+        await this._rep.send(JSON.stringify(reply));
+      } catch (err) {
+        if (this._running) this.telemetry.log("warn", "ZmqBridge", `REP loop: ${err.message}`);
+        else break;
       }
-    } catch (err) {
-      if (this._running)
-        this.telemetry.log("error", "ZmqBridge", `REP loop exited: ${err && err.message || err}`);
     }
-    this.telemetry.log("info", "ZmqBridge", "REP loop ended");
   }
 
   async _loopPullV6() {
-    this.telemetry.log("info", "ZmqBridge", `PULL loop started on :${this.pullPort}`);
-    try {
-      for await (const [raw] of this._pull) {
-        if (!this._running) break;
-        try {
-          this._onPullMessage(raw);
-        } catch (e) {
-          this.telemetry.log("warn", "ZmqBridge", `PULL handler error: ${e.message}`);
-        }
+    while (this._running && this._pull) {
+      try {
+        const [raw] = await this._pull.receive();
+        this._onPullMessage(raw);
+      } catch (err) {
+        if (this._running) this.telemetry.log("warn", "ZmqBridge", `PULL loop: ${err.message}`);
+        else break;
       }
-    } catch (err) {
-      if (this._running)
-        this.telemetry.log("error", "ZmqBridge", `PULL loop exited: ${err && err.message || err}`);
     }
-    this.telemetry.log("info", "ZmqBridge", "PULL loop ended");
   }
 
   _onRepMessage(msg) {
@@ -166,21 +137,8 @@ class ZmqBridge extends EventEmitter {
     const msg = this._parse(raw);
     if (!msg) return;
     this._eaSeenAt = Date.now();
-    this._lastPushTs = this._eaSeenAt;
-    // [DEBUG] log every PULL frame so we can see context_push, trade events, ecc.
-    try {
-      const op   = msg && (msg.op || msg.kind) || "?";
-      const sym  = msg && (msg.symbol || msg.sym || (msg.payload && msg.payload.symbol)) || "";
-      this.telemetry.log("info", "ZmqBridge",
-        `PULL op=${op} sym=${sym} size=${(typeof raw === "string" ? raw.length : (raw && raw.length) || 0)}b`);
-    } catch (_) {}
     if (msg.op === "context_push" || msg.kind === "context") {
-      // The EA sends the context fields at the TOP level (sym/bid/ask/...
-      // balance/equity/positions). Merge them into _lastContext so renderer
-      // reads consistent state across pushes (don't replace and lose past
-      // fields).
-      const body = msg.payload || msg;
-      this._lastContext = Object.assign({}, this._lastContext || {}, body);
+      this._lastContext = msg.payload || msg;
       this.emit("context_push", msg);
     } else if (msg.op === "trade_event") {
       this.emit("trade_event", msg);
@@ -190,17 +148,8 @@ class ZmqBridge extends EventEmitter {
   }
 
   async _handleReq(msg) {
-    if (!msg || typeof msg !== "object") {
-      this.telemetry.log("warn", "ZmqBridge", `REQ bad_request raw=${JSON.stringify(msg)}`);
-      return { ok: false, reason: "bad_request" };
-    }
+    if (!msg || typeof msg !== "object") return { ok: false, reason: "bad_request" };
     this._eaSeenAt = Date.now();
-    // [DEBUG] log every REQ so we can see ai_query, ping, news, etc.
-    try {
-      const op  = msg.op || msg.kind || msg.decision || "?";
-      const sym = msg.symbol || (msg.payload && msg.payload.symbol) || "";
-      this.telemetry.log("info", "ZmqBridge", `REQ op=${op} sym=${sym}`);
-    } catch (_) {}
     switch (msg.op) {
       case "ping":
         return { ok: true, t: Date.now() };
@@ -229,13 +178,7 @@ class ZmqBridge extends EventEmitter {
       const body = JSON.stringify(payload || {});
       // Multipart [topic, body] is the standard ZMQ PUB pattern.
       if (zmqMode === "v6") {
-        // Serialize sends: zeromq@6 allows only one concurrent send per socket.
-        this._pubChain = this._pubChain.then(() => {
-          if (!this._pub || !this._running) return;
-          return this._pub.send([topic, body]).catch((e) => {
-            this.telemetry.log("warn", "ZmqBridge", `pub failed: ${e.message}`);
-          });
-        });
+        this._pub.send([topic, body]).catch(() => {});
       } else {
         this._pub.send([topic, body]);
       }
@@ -261,19 +204,11 @@ class ZmqBridge extends EventEmitter {
   snapshot() {
     const ctx = this._lastContext || {};
     const ageMs = this._eaSeenAt ? Date.now() - this._eaSeenAt : Infinity;
-    // Flags consumed by the renderer (AI ENGINE STATUS, ACCOUNT MATRIX, ecc.)
-    const bound = this._running && !!this._rep && !!this._pub && !!this._pull;
     return {
       connected:    ageMs < 5000,
       mode:         zmqMode,
       lastSeenAgo:  Number.isFinite(ageMs) ? ageMs : null,
       lastContext:  ctx,
-      // explicit flags for the renderer
-      repBound:     bound,
-      pubBound:     bound,
-      pullBound:    bound,
-      lastPushTs:   this._lastPushTs || 0,
-      eaSeenAt:     this._eaSeenAt || 0,
       ports: {
         rep: this.repPort, pub: this.pubPort, pull: this.pullPort,
       },

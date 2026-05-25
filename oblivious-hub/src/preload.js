@@ -89,16 +89,4 @@ contextBridge.exposeInMainWorld("hub", {
     healthCheck:  (payload) => ipcRenderer.invoke("deploy:healthCheck",  payload),
     pullLogs:     (payload) => ipcRenderer.invoke("deploy:pullLogs",     payload),
   },
-
-  // Mobile gateway (VPS-side, direct mobile↔VPS encrypted control plane).
-  mobile: {
-    status:              ()        => ipcRenderer.invoke("mobile:status"),
-    start:               (payload) => ipcRenderer.invoke("mobile:start", payload),
-    stop:                ()        => ipcRenderer.invoke("mobile:stop"),
-    createPairingToken:  (payload) => ipcRenderer.invoke("mobile:createPairingToken", payload),
-    listDevices:         ()        => ipcRenderer.invoke("mobile:listDevices"),
-    revokeDevice:        (payload) => ipcRenderer.invoke("mobile:revokeDevice", payload),
-    setPolicy:           (payload) => ipcRenderer.invoke("mobile:setPolicy", payload),
-    lanIps:              ()        => ipcRenderer.invoke("mobile:lanIps"),
-  },
 });

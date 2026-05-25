@@ -709,45 +709,6 @@ span.kv-v.kv-green { color: var(--green) !important; }
 .vps-row-cta button { flex: 1 1 auto; min-width: 130px; }
 .vps-row small.dim { opacity: 0.6; font-size: 9.5px; margin-left: 4px; }
 
-/* MOBILE DEVICES tab — QR pairing + device registry */
-.mob-qr-wrap {
-  display: flex; gap: 12px; align-items: center;
-  margin: 8px 0; padding: 10px;
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid var(--neon-faint);
-  border-radius: 4px;
-}
-.mob-qr-img {
-  width: 132px; height: 132px;
-  image-rendering: pixelated;
-  background: #fff;            /* QR needs white quiet zone to scan */
-  border: 1px solid var(--neon-faint);
-  border-radius: 3px; padding: 2px;
-}
-.mob-qr-meta { font-size: 11px; line-height: 1.55; color: var(--text); flex: 1; }
-.mob-qr-meta code {
-  font-family: "JetBrains Mono", Consolas, monospace;
-  color: var(--neon-magenta);
-  font-size: 10.5px; word-break: break-all;
-}
-.mob-qr-meta .dim { opacity: 0.65; margin-top: 4px; font-style: italic; }
-
-.mob-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text); cursor: pointer; }
-.mob-toggle input { accent-color: var(--neon-magenta); }
-
-.mob-devices-wrap { margin-top: 6px; max-height: 180px; overflow-y: auto; }
-.mob-devices-table th { font-size: 10px; }
-.mob-devices-table td { font-size: 10.5px; padding: 4px 6px; }
-.mob-devices-table .status-connected { color: var(--green); }
-.mob-devices-table .status-revoked   { color: #ff5b5b; }
-.mob-devices-table .status-offline   { color: var(--muted); }
-.mob-devices-table .btn-revoke {
-  background: transparent; border: 1px solid #ff5b5b; color: #ff5b5b;
-  padding: 2px 8px; font-size: 10px; cursor: pointer; border-radius: 2px;
-}
-.mob-devices-table .btn-revoke:hover { background: rgba(255, 91, 91, 0.12); }
-
-
 /* Smart-log source pill — semantic colours, NOT synced (each source distinct) */
 .src-pill { display: inline-block; padding: 1px 5px; font-size: 9.5px; font-weight: 700; border: 1px solid; border-radius: 2px; }
 .src-AI   { color: #00e7ff;   border-color: #00e7ff; }
