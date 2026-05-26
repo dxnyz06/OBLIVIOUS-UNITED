@@ -18,12 +18,16 @@
 
 const https = require("https");
 const http  = require("http");
+const fs    = require("fs");
+const path  = require("path");
 const { EventEmitter } = require("events");
 const { URL } = require("url");
 
 const DEFAULT_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.csv";
+const CACHE_FILE = path.join(__dirname, "..", "..", "cache", "ff_calendar.csv");
 const FALLBACK_MIRRORS = [
   "https://nfs.faireconomy.media/ff_calendar_thisweek.csv",
+  "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.csv",
 ];
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -48,6 +52,8 @@ class NewsEngine extends EventEmitter {
 
   async start() {
     this._stopped = false;
+    this._loadDiskCache();
+    if (this._upcoming.length) this.emit("update", this.snapshot());
     await this._refresh();
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(() => {
@@ -88,11 +94,17 @@ class NewsEngine extends EventEmitter {
       let lastErr = null;
       for (const u of candidates) {
         try {
-          body = await this._fetch(u);
+          const bust = u.includes("?") ? "&" : "?";
+          body = await this._fetch(`${u}${bust}t=${Date.now()}`);
           if (body) break;
         } catch (e) { lastErr = e; }
       }
-      if (!body) throw lastErr || new Error("all_mirrors_failed");
+      if (!body) {
+        this._loadDiskCache();
+        if (this._upcoming.length) return;
+        throw lastErr || new Error("all_mirrors_failed");
+      }
+      this._saveDiskCache(body);
 
       const events = this._parseCsv(body);
       this._events = this._dedupe(events).sort((a, b) => a.time - b.time);
@@ -112,9 +124,32 @@ class NewsEngine extends EventEmitter {
     } catch (err) {
       this._lastError = err.message || String(err);
       this.telemetry.log("warn", "NewsEngine", `fetch failed: ${this._lastError}`);
+      if (!this._upcoming.length) this._loadDiskCache();
       // Re-emit current snapshot so the renderer at least has something.
       if (this._upcoming.length) this.emit("update", this.snapshot());
     }
+  }
+
+  _loadDiskCache() {
+    try {
+      if (!fs.existsSync(CACHE_FILE)) return;
+      const body = fs.readFileSync(CACHE_FILE, "utf8");
+      const events = this._dedupe(this._parseCsv(body)).sort((a, b) => a.time - b.time);
+      if (!events.length) return;
+      this._events = events;
+      this._upcoming = this._pickFreshest(events, 10);
+      this._lastFetch = Date.now();
+      this.telemetry.log("info", "NewsEngine",
+        `loaded disk cache (${this._upcoming.length} upcoming)`);
+    } catch (_) {}
+  }
+
+  _saveDiskCache(body) {
+    try {
+      const dir = path.dirname(CACHE_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(CACHE_FILE, body, "utf8");
+    } catch (_) {}
   }
 
   _fetch(rawUrl) {

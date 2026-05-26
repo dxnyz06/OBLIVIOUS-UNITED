@@ -139,6 +139,19 @@
 #ifndef TS_TRAIL
 #define TS_TRAIL      3
 #endif
+#ifndef STG_INVALIDATED
+#define STG_DETECTED          0
+#define STG_DRAWN             1
+#define STG_PENDING_ELIGIBLE  2
+#define STG_DEPLOYED          3
+#define STG_INVALIDATED       4
+#define STG_EXPIRED           5
+#define STG_CONFIRMED         6
+#define STG_LOCKED_FOR_FILL   7
+#define STG_TRADE_LIVE        8
+#define STG_REPLACED          9
+#define STG_CANCELLED         10
+#endif
 
 // ════════════════════════════════════════════════════════════════════
 // ANTI-REGRESSION ALIAS — g_lad_tpMax -> g_lad_tpmax  (DO NOT REMOVE)
@@ -206,14 +219,21 @@ int CreateFileW(string, uint, uint, int, uint, uint, int);
 // ============================================================
 // ZeroMQ endpoints + tuning (R3)
 // ============================================================
-#define ZMQ_REQ_ENDPOINT          "tcp://127.0.0.1:5555"
-#define ZMQ_SUB_ENDPOINT          "tcp://127.0.0.1:5556"
-#define ZMQ_PUSH_ENDPOINT         "tcp://127.0.0.1:5557"
+#define ZMQ_REQ_ENDPOINT          "tcp://127.0.0.1:5565"
+#define ZMQ_SUB_ENDPOINT          "tcp://127.0.0.1:5566"
+#define ZMQ_PUSH_ENDPOINT         "tcp://127.0.0.1:5567"
 #define ZMQ_REQ_TIMEOUT_MS        1500
 #define ZMQ_LINGER_MS             0
 #define ZMQ_HEARTBEAT_TIMEOUT_S   30
 #define ZMQ_PUSH_THROTTLE_MS      50
 #define ZMQ_SUB_DRAIN_MAX         32
+// One chart owns REQ/SUB/PUSH — avoids dozens of TCP leaks when the EA
+// is attached to multiple charts (each instance used to call connect()).
+#define GV_ZMQ_MASTER_CHART       "OBL_ZMQ_MASTER_CHART"
+#define GV_HUB_LAST_HB            "OBL_HUB_LAST_HB_TS"
+#define GV_OF_LAST_TS             "OBL_OF_LAST_TS"
+#define GV_NEWS_PANEL_TS          "OBL_NEWS_PANEL_TS"
+#define OBL_NEWS_PANEL_FILE       "OBL_NEWS_PANEL.txt"
 // Topic prefixes consumed on SUB socket
 #define ZMQ_TOPIC_HEARTBEAT       "oblivious.heartbeat"
 #define ZMQ_TOPIC_COMMAND         "oblivious.command"
@@ -2730,6 +2750,30 @@ void Engine_ITER29_LadderReport() {
    Print("[OBLIVIOUS][AUDIT][ITER37] entry_splitter=HARD_DISABLED (legacy 2-extra-limit splitter inside SafeOrderSend turned off — Staging_SubmitLadder is the sole splitter; fixes '6-vs-3' duplication)");
    PrintFormat("[OBLIVIOUS][AUDIT][ITER37] lot_policy=MANUAL_LOT_PER_LEVEL (every ladder level = Active_ManualLot()=%.2f; Grid alone keeps progression ManualLot×GridLotMultiplier^level)",
                Active_ManualLot());
+   // ════════════════════════════════════════════════════════════════
+   // ITER 38 — TPMAX RE-TOUCH + GRID TREND-FOLLOW + RSI v3
+   // ════════════════════════════════════════════════════════════════
+   Print("[OBLIVIOUS][AUDIT][ITER38] tpmax_retouch_close=ACTIVE (RUNNER mode: if price went past TPMAX then comes back to retouch it, close immediately — lock gains)");
+   Print("[OBLIVIOUS][AUDIT][ITER38] grid_range_gate=SOFTENED (Grid now also fires in trending markets, following the trend via HTF gate — was hard-blocked on non-ranging)");
+   Print("[OBLIVIOUS][AUDIT][ITER38] reverse_rsi_v3=TIGHT_NEUTRAL (NORMAL 47/53 · LOW 46/54 · HIGH 38/62 — fires more often in ranging XAUUSD)");
+   // ════════════════════════════════════════════════════════════════
+   // ITER 39 — VIRTUAL ENFORCEMENT + COMPILE FIX
+   // ════════════════════════════════════════════════════════════════
+   Print("[OBLIVIOUS][AUDIT][ITER39] aa_ordermodify=VIRTUAL_GATED (AA_OrderModify forces sl=0/tp=0 for non-Predicted — prevents XAUUSD-style broker stop-out at entry)");
+   Print("[OBLIVIOUS][AUDIT][ITER39] tpsl_register_clear_leftover=COMPILE_FIXED (bool _clrRes assigned; no more 'unused return' warning)");
+   Print("[OBLIVIOUS][AUDIT][ITER39] cluster_money_pre_tp3=BLOCKED (MinEmergencyProfitPercent gated by liveState<LIVE_TRAIL; never closes pre-TP3 nor in loss)");
+   // ════════════════════════════════════════════════════════════════
+   // ITER 39.5/40 — DIAGNOSTICS + REVERSE SOFT + HUB AUDIT
+   // ════════════════════════════════════════════════════════════════
+   Print("[OBLIVIOUS][AUDIT][ITER39.5] gsg_diagnostics=ACTIVE ([GSG-DIAG] log per chart shows which gate blocks: AutoTrading / Spread / MLM / DD — fix XAUUSD silent owners)");
+   Print("[OBLIVIOUS][AUDIT][ITER39.5] reverse_structural_soft=ACTIVE (rejection wick 40% + RSI-extreme >=70/<=30 fallback — Reverse fires more on XAUUSD)");
+   Print("[OBLIVIOUS][AUDIT][ITER40] hub_tpsl_ai=PRE_EXISTING (Cmd_HandleRefineTPSL already routed via REFINE_TPSL: sl/tp1/tp2/tp3/tpmax; SET_TPSL_MODE active via GlobalVariable TPSL_MODE)");
+   PrintFormat("[OBLIVIOUS][AUDIT][ITER40] tpsl_mode=%s (TPSLMode input=%d → %s)",
+               (IsTPSL_AI() ? "AI" : "NATIVE"), (int)TPSLMode,
+               (IsTPSL_AI() ? "bridge-driven TP/SL from Hub" : "strategy-native TP/SL"));
+   Print("[OBLIVIOUS][AUDIT][ITER40] cross_symbol_guard=ACTIVE (AA_OrderModify + Cmd_HandleRefineTPSL refuse tickets of other symbols — fixes BTC SL=4576 / XAU SL=77627 contamination)");
+   Print("[OBLIVIOUS][AUDIT][ITER40] grid_cap_v3=EXTREME_ONLY (adxCap 45+15tff → 60+18tff; atrCap 1.50 → 2.00 — Grid fires on most regimes)");
+   Print("[OBLIVIOUS][AUDIT][ITER40] ict_ote_floor=NEAR_ZERO (oteQ 0.12 → 0.06; ICT fires on weakest OTE if displacement absent)");
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -13492,6 +13536,23 @@ void ActiveStrategiesPanel_Cleanup()
 
 
 int OnInit() {
+   Print("════════════════════════════════════════════════════════════════");
+   Print("[OBLIVIOUS][BUILD] v48_ITER42 multi-owner + arrow-killer + cleanup-3s + bridge-truth");
+   Print("[OBLIVIOUS][BUILD] Active fixes: ITER33-42 (all preserved)");
+   Print("════════════════════════════════════════════════════════════════");
+   // ITER 42 — boot-time arrow purge: any OBJ_ARROW left from previous
+   //   builds is removed. User contract: no arrows on MT4 chart.
+   {
+      int _arr_total = ObjectsTotal(0, -1, OBJ_ARROW);
+      int _arr_removed = 0;
+      for (int _ai = _arr_total - 1; _ai >= 0; _ai--) {
+         string _an = ObjectName(0, _ai, -1, OBJ_ARROW);
+         if (StringLen(_an) > 0) { ObjectDelete(0, _an); _arr_removed++; }
+      }
+      if (_arr_removed > 0)
+         PrintFormat("[OBLIVIOUS][ITER42] boot-arrow-purge: removed %d legacy OBJ_ARROW objects",
+                     _arr_removed);
+   }
    // Institutional UI setup: chart background watermark + monochrome
    // candle scheme (white outline, black body) so the OBLIVIOUS AI
    // panels stay coherent with the spec.
@@ -13643,11 +13704,43 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 
 bool GlobalStrategyGuards() {
    // Master guard: blocks all strategy entries when global conditions are unsafe
-   if (!EA_IsTradeAllowed()) return false;
-   if (!SpreadOk()) return false;
-   if (IsMLM_Blocked()) return false;
+   // ITER 39.5 — DIAGNOSTIC: emit reason at most every 120s per (symbol+gate)
+   //   so the user can see WHY all owners are silent on a specific chart.
+   if (!EA_IsTradeAllowed()) {
+      static datetime __gsg_tradeAllowedLog = 0;
+      if (TimeCurrent() - __gsg_tradeAllowedLog >= 120) {
+         __gsg_tradeAllowedLog = TimeCurrent();
+         PrintFormat("[GSG-DIAG] %s skip · EA_IsTradeAllowed=false (AutoTrading off / locked)", Symbol());
+      }
+      return false;
+   }
+   if (!SpreadOk()) {
+      static datetime __gsg_spreadLog = 0;
+      if (TimeCurrent() - __gsg_spreadLog >= 120) {
+         __gsg_spreadLog = TimeCurrent();
+         PrintFormat("[GSG-DIAG] %s skip · SpreadOk=false (spread=%.0f pts > MaxSpreadPoints=%.0f)",
+                     Symbol(), (double)__SpreadPoints(), (double)MaxSpreadPoints);
+      }
+      return false;
+   }
+   if (IsMLM_Blocked()) {
+      static datetime __gsg_mlmLog = 0;
+      if (TimeCurrent() - __gsg_mlmLog >= 120) {
+         __gsg_mlmLog = TimeCurrent();
+         PrintFormat("[GSG-DIAG] %s skip · IsMLM_Blocked=true (martingale lockdown active)", Symbol());
+      }
+      return false;
+   }
    double dd = Risk_GetCurrentDDPct();
-   if (dd >= MaxDailyDDPercent && MaxDailyDDPercent > 0) return false;
+   if (dd >= MaxDailyDDPercent && MaxDailyDDPercent > 0) {
+      static datetime __gsg_ddLog = 0;
+      if (TimeCurrent() - __gsg_ddLog >= 120) {
+         __gsg_ddLog = TimeCurrent();
+         PrintFormat("[GSG-DIAG] %s skip · DD %.2f%% >= MaxDailyDD %.2f%%",
+                     Symbol(), dd, MaxDailyDDPercent);
+      }
+      return false;
+   }
    return true;
 }
 
@@ -14198,26 +14291,66 @@ void Grid_Initialize() {
    g_gridState.invalidated = false;
 }
 
-bool Grid_IsRangeRegime() {
-   // Detect if market is in ranging regime suitable for Grid
-   double atr = iATR(Symbol(), PERIOD_CURRENT, 14, 1);
+// ITER 41 — GRID REGIME CLASSIFIER (multi-mode)
+//   Returns a regime label so the Grid logic can choose how to behave
+//   instead of being binary (range vs not-range).
+//   Possible regimes:
+//     0 RANGE         — classic mean-reversion ladder
+//     1 CHOP          — micro-fade in low-efficiency move
+//     2 PULLBACK      — controlled basket on trend pullback
+//     3 WICK_FADE     — stretched-move fade entry
+//     4 CONTINUATION  — safe trend-following basket
+//     5 BLOCKED       — only catastrophic conditions (extreme expansion)
+// ITER 41 — symbol/TF adaptive thresholds replace the old hard 1.5 cap.
+int Grid_RegimeClassify() {
+   double atr   = iATR(Symbol(), PERIOD_CURRENT, 14, 1);
    double atrH4 = iATR(Symbol(), PERIOD_H4, 14, 1);
-   
-   if (atr <= 0 || atrH4 <= 0) return false;
-   
-   // ATR ratio check - avoid trending markets
-   double atrRatio = atr / atrH4;
-   if (atrRatio > 1.5) return false; // Too volatile
-   
-   // Choppiness index - prefer choppy markets
-   double chop = GetChoppinessIndex(Symbol(), Period(), 14);
-   if (chop < 50.0) return false; // Too trending
-   
-   // Trend efficiency - avoid strong trends
+   if (atr <= 0 || atrH4 <= 0) return 5;             // data missing → BLOCKED
+   double atrRatio   = atr / atrH4;
+   double chop       = GetChoppinessIndex(Symbol(), Period(), 14);
    double efficiency = GetTrendEfficiency(Symbol(), Period(), 20);
-   if (efficiency > 0.6) return false; // Too efficient trend
-   
-   return true;
+   double adx        = iADX(Symbol(), Period(), 14, PRICE_CLOSE, MODE_MAIN, 1);
+   // TF / symbol-class adaptive caps (M1 noisy → wider tolerance).
+   int  per = Period();
+   // ITER 43 — atrRatioCap raised: BTCUSD/XAUUSD M1 routinely sees
+   //   atrRatio 3.5-4.5 on news bursts without being catastrophic.
+   double atrRatioCap = (per <= PERIOD_M5  ? 4.50 :
+                         per <= PERIOD_M30 ? 3.20 : 2.60);
+   // BLOCKED only on truly catastrophic expansion.
+   if (atrRatio > atrRatioCap) return 5;
+   // ITER 43 — thresholds widened so PULLBACK / CONTINUATION cover
+   //   the typical "trending ADX" zone the user complained about.
+   // RANGE — classic: high chop + low efficiency + moderate ADX.
+   if (chop >= 55.0 && efficiency <= 0.50 && adx <= 32.0) return 0;
+   // WICK_FADE — stretched ATR + ADX high, but momentum cooling.
+   if (atrRatio >= 1.20 && adx >= 26.0 && efficiency <= 0.72) return 3;
+   // CHOP — micro-fade window: choppy but not pure range.
+   if (chop >= 45.0 && efficiency <= 0.68) return 1;
+   // PULLBACK — clean trend (efficiency >0.50) but pulling back
+   //   (ADX up to 42 now, was 35). ITER 43: more setups reach here.
+   if (efficiency > 0.50 && adx < 42.0) return 2;
+   // CONTINUATION — strong trend, safe basket along the trend.
+   if (efficiency > 0.50 && adx >= 42.0 && atrRatio <= atrRatioCap * 0.90) return 4;
+   // Default fallback: CHOP-style soft mode.
+   return 1;
+}
+
+bool Grid_IsRangeRegime() {
+   // ITER 41 — backward-compatible wrapper. Returns true unless BLOCKED.
+   //   Old callers that bail-out on false now only stop on extreme
+   //   catastrophic expansion. All other regimes pass through.
+   int rg = Grid_RegimeClassify();
+   return (rg != 5);
+}
+
+// ITER 41 — human-readable regime tag for logs.
+string Grid_RegimeName(int r) {
+   if (r == 0) return "RANGE";
+   if (r == 1) return "CHOP";
+   if (r == 2) return "PULLBACK";
+   if (r == 3) return "WICK_FADE";
+   if (r == 4) return "CONTINUATION";
+   return "BLOCKED";
 }
 
 bool Grid_CheckStructuralInvalidation() {
@@ -15423,9 +15556,25 @@ bool Strategy_Grid_Logic() {
       return false;
    }
    
-   // Range regime requirement
-   if (!Grid_IsRangeRegime()) {
-      SmartLog("INFO", "GRID", "Market not in ranging regime suitable for Grid");
+   // Range regime requirement — ITER 38/41 SOFTENED:
+   //   Grid now operates across multiple regimes (RANGE/CHOP/PULLBACK/
+   //   WICK_FADE/CONTINUATION). Only BLOCKED (catastrophic expansion)
+   //   stops it. The regime is logged once per minute for transparency.
+   int __gridRegime = Grid_RegimeClassify();
+   static datetime __grid_regimeLog = 0;
+   if (TimeCurrent() - __grid_regimeLog >= 60) {
+      __grid_regimeLog = TimeCurrent();
+      SmartLog("INFO", "GRID",
+               StringFormat("regime=%s (atr=%.2f efficiency, ADX context-weight)",
+                            Grid_RegimeName(__gridRegime),
+                            iATR(Symbol(), Period(), 14, 1)));
+   }
+   if (__gridRegime == 5) {
+      static datetime __grid_blockLog = 0;
+      if (TimeCurrent() - __grid_blockLog >= 120) {
+         __grid_blockLog = TimeCurrent();
+         SmartLog("WARNING", "GRID", "regime=BLOCKED (catastrophic ATR expansion) — paused");
+      }
       return false;
    }
    
@@ -18060,7 +18209,34 @@ bool AA_OrderModify(int ticket, double price, double sl, double tp)
 {
       if (!OrderSelect(ticket, SELECT_BY_TICKET))
         return false;
+      // ITER 40 — CROSS-SYMBOL GUARD (CRITICAL FIX):
+      //   refuse any modify on a ticket whose symbol differs from the
+      //   chart's Symbol(). This was the root cause of the XAUUSD SL
+      //   showing BTCUSD price (4576 on BTC, 77627 on Gold) — each
+      //   chart instance was modifying tickets globally without
+      //   filtering by symbol, polluting cross-symbol SL/TP values.
+      if (OrderSymbol() != Symbol()) {
+         static datetime __aa_csLog = 0;
+         if (TimeCurrent() - __aa_csLog >= 60) {
+            __aa_csLog = TimeCurrent();
+            PrintFormat("[AA_OrderModify] CROSS_SYMBOL_BLOCKED ticket=%d orderSym=%s chartSym=%s — refused",
+                        ticket, OrderSymbol(), Symbol());
+         }
+         return false;
+      }
       RefreshRates();
+      // ITER 39 — FULL VIRTUAL ENFORCEMENT (anti broker stop-out):
+      //   user contract: "non chiudere mai in negativo" — every broker
+      //   SL modification was triggering broker stop-outs (e.g. XAUUSD
+      //   #603848276 closed @ entry because BE move set sl=entry).
+      //   For all non-Predicted owners we FORCE sl=0 tp=0 → trade
+      //   stays fully virtual. The state machine still tracks the
+      //   intended SL/TP internally and closes via OrderClose.
+      int aaMagic = OrderMagicNumber();
+      if (aaMagic != PredictedMagic) {
+         sl = 0.0;
+         tp = 0.0;
+      }
       datetime exp = OrderExpiration();
       bool ok = OrderModify(ticket, price, sl, tp, exp, clrNONE);
       if (!ok) {
@@ -23905,6 +24081,8 @@ void TPSL_RegisterTrade(int ticket, int magic, string strategy, int orderType,
       } else {
          // ITER 35 — clear any leftover broker SL/TP for non-Predicted
          //   so the trade is fully virtual from the start.
+         // ITER 38 — wrap result in a single bool assignment to avoid
+         //   "unused return value" compile warnings on stricter setups.
          if (OrderSelect(ticket, SELECT_BY_TICKET) && OrderCloseTime() == 0) {
             if (OrderStopLoss() != 0 || OrderTakeProfit() != 0) {
                bool _clrRes = OrderModify(ticket, OrderOpenPrice(), 0, 0, 0, clrGoldenrod);
@@ -24261,8 +24439,24 @@ void OBL_RemoveTicketObjects(int ticket) {
 //   Throttled at 10s. Called from Orchestrator_OnTick.
 datetime g_orphan_lastSweep = 0;
 void OBL_OrphanCleanup() {
-   if (TimeCurrent() - g_orphan_lastSweep < 10) return;
+   // ITER 42 — throttle reduced 5s → 3s for faster visual cleanup.
+   //   Also sweeps any OBJ_ARROW left over (no arrows policy).
+   // ITER 43 — throttle further reduced 3s → 1s per user spec
+   //   ("aggressively remove invalidated projected setup objects /
+   //   stale ladder visuals / dead staged objects"). Adds Pass 2
+   //   that wipes OBL_STG_<id>_* objects for any staged setup whose
+   //   in-memory state is terminal (INVALIDATED / EXPIRED / REPLACED
+   //   / CANCELLED). Boot-sweep of OBJ_ARROW is preserved.
+   if (TimeCurrent() - g_orphan_lastSweep < 1) return;
    g_orphan_lastSweep = TimeCurrent();
+   // Pass 0 — kill any OBJ_ARROW on the chart (user contract: no arrows).
+   {
+      int _at = ObjectsTotal(0, -1, OBJ_ARROW);
+      for (int _ai = _at - 1; _ai >= 0; _ai--) {
+         string _an = ObjectName(0, _ai, -1, OBJ_ARROW);
+         if (StringLen(_an) > 0) ObjectDelete(0, _an);
+      }
+   }
    int total = ObjectsTotal(0, -1, -1);
    int removed = 0;
    for (int i = total - 1; i >= 0; i--) {
@@ -24285,9 +24479,28 @@ void OBL_OrphanCleanup() {
          removed++;
       }
    }
-   if (removed > 0) {
-      PrintFormat("[OrphanCleanup] removed=%d OBL_LVL_* objects (closed/cancelled tickets)",
-                  removed);
+   // ITER 43 — Pass 2: OBL_STG_<stg_id>_* objects for setups whose
+   //   in-memory state is terminal. Catches anything Staging_Cleanup
+   //   missed (e.g. when transition was logged but draw was repeated
+   //   afterwards).
+   int removedStg = 0;
+   for (int j = 0; j < g_staged_count; j++) {
+      int st = g_staged[j].state;
+      if (st != STG_INVALIDATED && st != STG_EXPIRED &&
+          st != STG_REPLACED    && st != STG_CANCELLED) continue;
+      string prefix = StringFormat("OBL_STG_%d_", g_staged[j].stg_id);
+      int t2 = ObjectsTotal(0, -1, -1);
+      for (int k = t2 - 1; k >= 0; k--) {
+         string nmk = ObjectName(0, k);
+         if (StringFind(nmk, prefix) == 0) {
+            ObjectDelete(0, nmk);
+            removedStg++;
+         }
+      }
+   }
+   if (removed > 0 || removedStg > 0) {
+      PrintFormat("[OrphanCleanup] removed=%d OBL_LVL_*  stg_terminal=%d OBL_STG_*",
+                  removed, removedStg);
    }
 }
 
@@ -26946,13 +27159,8 @@ int GetSignalForIndex(int idx) {
 }
 
 void DrawWhiteArrow(string name, datetime t, double price, bool isBuy) {
-  int arrowCode = isBuy ? 233 : 234;
-  double arrowPrice = isBuy ? (price - 5 * Point) : (price + 5 * Point);
-  if (ObjectFind(0, name) < 0)
-    ObjectCreate(0, name, OBJ_ARROW, 0, t, arrowPrice);
-  ObjectSetInteger(0, name, OBJPROP_ARROWCODE, arrowCode);
-  ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
-  ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+  /* ITER42: chart arrows DISABLED — user contract: no arrows on MT4 chart. */
+  return;
 }
 
 void DrawWhiteNote(string name, datetime t, double price, string label) {
@@ -27548,6 +27756,8 @@ void Orchestrator_OnTick() {
    // del Hub e il fast-path orderflow arriverebbero solo via OnTimer
    // (ogni 30s), perdendo eventi e reagendo in ritardo.
    AIBridge_Poll();
+   DynPanel_UpdateBridgeStatus();
+   DynPanel_UpdateNewsRows();
 
    // === LEVEL 1: Canonical strategy dispatch ===
    // ────────────────────────────────────────────────────────────────
@@ -27735,6 +27945,9 @@ void Orchestrator_OnTick() {
 
                                             // News update
                                             NewsBridge_Update();
+
+                                            // HUB/BOOKMAP/NEWS rows — live even on slow-tick symbols
+                                            DynPanel_RefreshBridgeAndNews();
 
                                             // SmartLog timer
                                             SmartLog_OnTimer();
@@ -31846,7 +32059,19 @@ void LoadNewsFromConfig(){
 
                                         void NewsPanel_Update3Lines() {
                                           string n1 = "", n2 = "", n3 = "";
-                                          AI_GetNewsLines(n1, n2, n3);
+                                          // ITER 42 — TRUTHFUL: only fetch
+                                          //   live headlines when the news
+                                          //   feed is actually fresh; show
+                                          //   an honest placeholder when the
+                                          //   hub/news feed is stale.
+                                          bool live = News_FeedIsLive();
+                                          if (live) {
+                                            AI_GetNewsLines(n1, n2, n3);
+                                          } else {
+                                            n1 = "no live news feed";
+                                            n2 = "";
+                                            n3 = "";
+                                          }
                                           string ids[3];
                                           ids[0] = "LBL_NEWS1"; ids[1] = "LBL_NEWS2"; ids[2] = "LBL_NEWS3";
                                           string vals[3];
@@ -33374,6 +33599,7 @@ Socket   g_zmq_req(g_zmq_ctx, ZMQ_REQ);
 Socket   g_zmq_sub(g_zmq_ctx, ZMQ_SUB);
 Socket   g_zmq_push(g_zmq_ctx, ZMQ_PUSH);
 bool     g_zmq_initialized   = false;
+bool     g_zmq_is_master     = false;
 datetime g_ai_lastHeartbeat  = 0;
 uint     g_zmq_lastPushMs    = 0;
 string   g_ai_lastNewsCacheJson = "";
@@ -33515,8 +33741,20 @@ int    ZMQ_DrainSubscriber();
 void   AI_HandleHeartbeat(string body);
 void   AI_HandleCommand(string body);
 void   AI_HandleNews(string body);
+void   AI_ApplyNewsPanelFromBody(string body);
 void   AI_HandleBookmap(string body);
 void   AI_HandleDecision(string body);
+void   OBL_SyncHubHeartbeatGV();
+void   OBL_SyncOrderflowGV();
+void   OBL_ApplyNewsPanelLines(string l0, string l1, string l2);
+string OBL_CleanNewsDisplayText(string raw);
+void   DynPanel_RefreshBridgeAndNews();
+void   OBL_ParseNewsPanelPack(string pack);
+void   OBL_ReadNewsPanelFile();
+void   OBL_WriteNewsPanelFile();
+void   DynPanel_UpdateNewsRows();
+datetime OBL_GetHubHeartbeatTs();
+datetime OBL_GetOrderflowTs();
 void   Cmd_HandleExecute(string body);
 void   Cmd_HandleHold(string body);
 void   Cmd_HandleCancel(string body);
@@ -33599,7 +33837,12 @@ bool   Ownership_IsHubManaged(int ticket);
       g_ai_connected    = true;
       g_BridgeConnected = true;
       g_ai_status       = "ZMQ_CONNECTED";
-      Print("[AIBridge] ZMQ ready (REQ:5555 / SUB:5556 / PUSH:5557)");
+      AIBridge_SendMarketData(Symbol());
+      Print("[AIBridge] ZMQ ready (REQ:5565 / SUB:5566 / PUSH:5567)");
+   } else if (!g_zmq_is_master) {
+      g_ai_connected    = false;
+      g_BridgeConnected = false;
+      g_ai_status       = "ZMQ_SLAVE_CHART";
    } else {
       g_ai_connected    = false;
       g_BridgeConnected = false;
@@ -33634,22 +33877,30 @@ bool AIBridge_SendRequest(string request) {
    // caches + dispatch hub commands.  Also enforces the heartbeat
    // staleness check so g_ai_connected drops when the hub goes silent.
    if (!g_ai_enabled) return;
-   if (!g_zmq_initialized) {
+   if (!g_zmq_initialized && g_zmq_is_master) {
                                               AIBridge_Connect();
       if (!g_zmq_initialized) return;
    }
+   if (!g_zmq_initialized) return;
    int n = ZMQ_DrainSubscriber();
    if (n > 0) {
                                             g_ai_lastResponse = TimeCurrent();
                                             g_ai_successCount++;
                                             g_ai_status = "ACTIVE";
    }
-   if (g_ai_lastHeartbeat > 0 &&
-       (TimeCurrent() - g_ai_lastHeartbeat) > ZMQ_HEARTBEAT_TIMEOUT_S) {
-      g_ai_connected    = false;
-      g_BridgeConnected = false;
-      g_ai_status       = "HEARTBEAT_TIMEOUT";
+   datetime hbTs = OBL_GetHubHeartbeatTs();
+   if (hbTs > 0 && (TimeCurrent() - hbTs) > ZMQ_HEARTBEAT_TIMEOUT_S) {
+      if (g_zmq_initialized) {
+         g_ai_connected    = false;
+         g_BridgeConnected = false;
+         g_ai_status       = "HEARTBEAT_TIMEOUT";
+      }
+   } else if (hbTs > 0) {
+      g_ai_connected    = true;
+      g_BridgeConnected = true;
+      if (g_ai_status == "HEARTBEAT_TIMEOUT") g_ai_status = "ACTIVE";
    }
+   DynPanel_RefreshBridgeAndNews();
 }
 
 
@@ -33867,7 +34118,7 @@ void AIBridge_SendMarketData(string symbol) {
       "\"news_block\":%s,\"news_impact\":%d,\"strategies\":{\"predicted\":%s,\"breakout\":%s,"
       "\"fvg\":%s,\"grid\":%s,\"reverse\":%s,\"smc\":%s,\"ict\":%s},"
       "\"tpsl_mode\":\"%s\",\"ts\":%d",
-      symbol, Period(),
+      OBL_JsonEscape(symbol), Period(),
       MarketInfo(symbol, MODE_BID), MarketInfo(symbol, MODE_ASK),
                                                 iATR(symbol, 0, 14, 0),
       iRSI(symbol, 0, 14, PRICE_CLOSE, 0),
@@ -33889,7 +34140,8 @@ void AIBridge_SendMarketData(string symbol) {
       "\"broker\":\"%s\",\"server\":\"%s\",\"currency\":\"%s\"",
       AccountBalance(), AccountEquity(), marginUsed, AccountFreeMargin(),
       marginLvl, (int)AccountLeverage(), (int)AccountNumber(),
-      AccountCompany(), AccountServer(), AccountCurrency());
+      OBL_JsonEscape(AccountCompany()), OBL_JsonEscape(AccountServer()),
+      OBL_JsonEscape(AccountCurrency()));
    // Performance metrics — campi consumati dalla UI PERFORMANCE METRICS.
    double perf_open  = 0.0;
    int    perf_oTrades = 0;
@@ -34032,6 +34284,15 @@ void AIBridge_SendMarketData(string symbol) {
 // required: every field consumed by the EA is FLAT (string / number /
 // bool). Nested `of_context` objects are walked separately by
 // passing the inner JSON substring (Msg_ExtractObject helper).
+string OBL_JsonEscape(string s) {
+   if (StringLen(s) == 0) return "";
+   StringReplace(s, "\\", "\\\\");
+   StringReplace(s, "\"", "\\\"");
+   StringReplace(s, "\r", "\\r");
+   StringReplace(s, "\n", "\\n");
+   return s;
+}
+
 string Msg_GetField(string body, string key) {
    if (StringLen(body) == 0 || StringLen(key) == 0) return "";
 
@@ -34189,8 +34450,47 @@ bool Ownership_IsHubManaged(int ticket) {
 }
 
 // --- ZMQ transport core ----------------------------------------
+bool ZMQ_ClaimMaster() {
+   long myChart = ChartID();
+   if (!GlobalVariableCheck(GV_ZMQ_MASTER_CHART)) {
+      GlobalVariableSet(GV_ZMQ_MASTER_CHART, (double)myChart);
+      return true;
+   }
+   long owner = (long)GlobalVariableGet(GV_ZMQ_MASTER_CHART);
+   if (owner == myChart) return true;
+   // Previous owner chart removed — take over.
+   if (owner <= 0 || ChartSymbol((int)owner) == "") {
+      GlobalVariableSet(GV_ZMQ_MASTER_CHART, (double)myChart);
+      return true;
+   }
+   // Stale lock: owner chart alive but no hub heartbeat — reclaim so a
+   // visible chart can own ZMQ after Hub restart or a stuck master.
+   datetime hbTs = 0;
+   if (GlobalVariableCheck(GV_HUB_LAST_HB))
+      hbTs = (datetime)GlobalVariableGet(GV_HUB_LAST_HB);
+   if (hbTs == 0 || (TimeCurrent() - hbTs) > ZMQ_HEARTBEAT_TIMEOUT_S) {
+      GlobalVariableSet(GV_ZMQ_MASTER_CHART, (double)myChart);
+      return true;
+   }
+   return false;
+}
+
+void ZMQ_ReleaseMaster() {
+   long myChart = ChartID();
+   if (GlobalVariableCheck(GV_ZMQ_MASTER_CHART) &&
+       (long)GlobalVariableGet(GV_ZMQ_MASTER_CHART) == myChart) {
+      GlobalVariableDel(GV_ZMQ_MASTER_CHART);
+   }
+}
+
 bool ZMQ_Init() {
    if (g_zmq_initialized) return true;
+   if (!ZMQ_ClaimMaster()) {
+      g_zmq_is_master = false;
+      Print("[ZMQ] secondary chart — bridge sockets skipped (use one chart for Hub UI)");
+      return false;
+   }
+   g_zmq_is_master = true;
    g_zmq_req.setLinger(ZMQ_LINGER_MS);
    g_zmq_req.setSendTimeout(ZMQ_REQ_TIMEOUT_MS);
    g_zmq_req.setReceiveTimeout(ZMQ_REQ_TIMEOUT_MS);
@@ -34233,11 +34533,17 @@ bool ZMQ_Init() {
 }
 
 void ZMQ_Shutdown() {
-   if (!g_zmq_initialized) return;
+   if (!g_zmq_initialized) {
+      if (g_zmq_is_master) ZMQ_ReleaseMaster();
+      g_zmq_is_master = false;
+      return;
+   }
    g_zmq_req.disconnect(ZMQ_REQ_ENDPOINT);
    g_zmq_sub.disconnect(ZMQ_SUB_ENDPOINT);
    g_zmq_push.disconnect(ZMQ_PUSH_ENDPOINT);
    g_zmq_initialized = false;
+   ZMQ_ReleaseMaster();
+   g_zmq_is_master = false;
    Print("[ZMQ] sockets disconnected");
 }
 
@@ -34302,7 +34608,20 @@ bool ZMQ_PushContext(string payload) {
    }
    g_zmq_lastPushMs = nowMs;
    ZmqMsg msg(payload);
-   return g_zmq_push.send(msg, true);  // non-blocking
+   bool ok = g_zmq_push.send(msg, true);  // non-blocking
+   if (!ok) {
+      g_zmq_lastPushMs = 0;
+      static datetime s_pushFailLog = 0;
+      if (TimeCurrent() - s_pushFailLog >= 15) {
+         s_pushFailLog = TimeCurrent();
+         PrintFormat("[ZMQ] PUSH send failed err=%d payload_len=%d",
+                     GetLastError(), StringLen(payload));
+      }
+   }
+   // Heartbeat GV is updated only from AI_HandleHeartbeat (real PUB), not
+   // from a successful PUSH — otherwise the panel shows CONNECTED while
+   // SUB/news are stale and the Hub never receives context_push.
+   return ok;
 }
 
 int ZMQ_DrainSubscriber() {
@@ -34331,10 +34650,29 @@ int ZMQ_DrainSubscriber() {
 
 // --- SUB topic handlers (R4, R6) -------------------------------
 void AI_HandleHeartbeat(string body) {
+   bool firstHb     = (g_ai_lastHeartbeat == 0);
+   bool hubWasStale = (g_ai_lastHeartbeat > 0 &&
+                       (TimeCurrent() - g_ai_lastHeartbeat) > ZMQ_HEARTBEAT_TIMEOUT_S);
    g_ai_lastHeartbeat = TimeCurrent();
+   OBL_SyncHubHeartbeatGV();
    g_ai_connected     = true;
    g_BridgeConnected  = true;
    g_ai_status        = "ACTIVE";
+   // Hub restart: re-connect PUSH only after prolonged silence (not every
+   // first heartbeat) — disconnect/connect per tick leaked TCP sockets.
+   static datetime s_lastPushReconnect = 0;
+   if (g_zmq_initialized && hubWasStale &&
+       (TimeCurrent() - s_lastPushReconnect) >= 30) {
+      g_zmq_push.disconnect(ZMQ_PUSH_ENDPOINT);
+      g_zmq_push.connect(ZMQ_PUSH_ENDPOINT);
+      s_lastPushReconnect = TimeCurrent();
+   }
+   // Feed Hub ACCOUNT MATRIX / PERFORMANCE METRICS (every ~2s with hub heartbeat).
+   static datetime s_lastHubCtxPush = 0;
+   if (TimeCurrent() - s_lastHubCtxPush >= 2) {
+      AIBridge_SendMarketData(Symbol());
+      s_lastHubCtxPush = TimeCurrent();
+   }
    string dir = Msg_GetField(body, "ai_dir");
    if (StringLen(dir) > 0) {
       if (dir == "BUY")       g_ai_direction = 1;
@@ -34345,11 +34683,63 @@ void AI_HandleHeartbeat(string body) {
    if (conf >= 0.0) g_ai_confidence = conf;
    string sig = Msg_GetField(body, "ai_signal");
    if (StringLen(sig) > 0) g_ai_lastSignal = sig;
+   // News panel lines piggyback on heartbeat (every ~2s) — reliable even if
+   // the dedicated oblivious.news frame was missed (PUB slow-joiner).
+   AI_ApplyNewsPanelFromBody(body);
 }
 
 // R6: news state from hub becomes a HINT for the local NewsPolicy,
 //     not a parallel block layer.  We update the news cache only;
 //     NewsPolicy_CanOpen() remains the single gate.
+void OBL_ParseNewsPanelPack(string pack) {
+   string l0, l1, l2;
+   OBL_SplitNewsPack(pack, l0, l1, l2);
+   AI_ApplyNewsPanelLines(l0, l1, l2);
+}
+
+void AI_ApplyNewsPanelLines(string l0, string l1, string l2) {
+   int filled = 0;
+   if (StringLen(l0) > 0) filled++;
+   if (StringLen(l1) > 0) filled++;
+   if (StringLen(l2) > 0) filled++;
+   if (filled == 0) return;
+
+   // Full snapshot from hub (3 headlines, newest first).
+   if (filled >= 3) {
+      OBL_ApplyNewsPanelLines(l0, l1, l2);
+      return;
+   }
+   if (filled == 2 && StringLen(l0) > 0 && StringLen(l1) > 0) {
+      string keep = g_dynNews[2];
+      if (keep == l0 || keep == l1) keep = "";
+      OBL_ApplyNewsPanelLines(l0, l1, keep);
+      return;
+   }
+   // Single fresh headline — roll stack (new on top, drop oldest).
+   if (StringLen(l0) > 0 && l0 != g_dynNews[0])
+      DynPanel_PushNews(l0);
+   else if (StringLen(l1) > 0 && l1 != g_dynNews[0])
+      DynPanel_PushNews(l1);
+   else if (StringLen(l2) > 0 && l2 != g_dynNews[0])
+      DynPanel_PushNews(l2);
+}
+
+void AI_ApplyNewsPanelFromBody(string body) {
+   string l0 = "", l1 = "", l2 = "";
+   string pack = Msg_GetField(body, "panel_pack");
+   if (StringLen(pack) > 0)
+      OBL_SplitNewsPack(pack, l0, l1, l2);
+   else {
+      l0 = Msg_GetField(body, "panel_line0");
+      l1 = Msg_GetField(body, "panel_line1");
+      l2 = Msg_GetField(body, "panel_line2");
+   }
+   if (StringLen(l0) > 0 || StringLen(l1) > 0 || StringLen(l2) > 0) {
+      g_news_lastUpdate = TimeCurrent();
+      AI_ApplyNewsPanelLines(l0, l1, l2);
+   }
+}
+
 void AI_HandleNews(string body) {
    g_ai_lastNewsCacheJson = body;
    g_ai_lastNewsCacheTs   = TimeCurrent();
@@ -34363,6 +34753,8 @@ void AI_HandleNews(string body) {
    if (StringLen(nextEv) > 0) g_news_nextEvent = nextEv;
    if (untilTs > 0) g_news_nextEventTime = (datetime)untilTs;
    g_news_lastUpdate = TimeCurrent();
+   AI_ApplyNewsPanelFromBody(body);
+   DynPanel_UpdateNewsRows();
 }
 
 // Fast-path orderflow stream on topic `oblivious.decision`. Compact
@@ -34381,18 +34773,24 @@ void AI_HandleDecision(string body) {
    if (biasStr == "bullish" || biasStr == "BULLISH" || biasStr == "bull") bias =  1.0;
    else if (biasStr == "bearish" || biasStr == "BEARISH" || biasStr == "bear") bias = -1.0;
    g_of_lastTs     = TimeCurrent();
+   OBL_SyncOrderflowGV();
    g_of_symbol     = (StringLen(frameSym) > 0 ? frameSym : Symbol());
    g_of_bias       = bias;
    g_of_confidence = conf / 100.0;  // normalize 0..1
    if (StringLen(sig) > 0) g_of_signal = sig;
    g_of_fresh      = true;
+   DynPanel_UpdateBridgeStatus();
 
    // FASE 11 - EXE trigger marker: disegna freccia OF sul grafico
    // OGNI volta che arriva una decisione orderflow esterna. Cosi'
    // l'utente vede chiaramente che il trigger NON e' nativo mq4 ma
    // viene dal bridge EXE/Bookmap. Le frecce si auto-puliscono
    // dopo 200 candele per evitare clutter.
-   if (StringLen(sig) > 0 && sig != "NONE" && bias != 0.0) {
+   // ITER42 — chart arrows DISABLED (user contract: no arrows on MT4 chart).
+   //   The Bookmap/OF trigger info still flows through Smart Log and panel,
+   //   just no longer draws an OBJ_ARROW on the chart.
+   if (false /* ITER42 OF arrow draw disabled */
+       && StringLen(sig) > 0 && sig != "NONE" && bias != 0.0) {
       string aname = StringFormat("OBL_OF_%d", (int)TimeCurrent());
       datetime  t  = Time[0];
       double    px = (bias > 0 ? Bid : Ask);
@@ -34468,6 +34866,7 @@ void AI_HandleBookmap(string body) {
 
    g_of_symbol           = (StringLen(frameSym) > 0 ? frameSym : targetSym);
    g_of_lastTs           = TimeCurrent();
+   OBL_SyncOrderflowGV();
    if (seqIn   > 0) g_of_sequence       = seqIn;
    if (tsHubIn > 0) g_of_last_update_ts = tsHubIn;
    string freshTok = Msg_GetField(scope, "fresh");
@@ -34492,6 +34891,7 @@ void AI_HandleBookmap(string body) {
    // Hub-derived danger metric (may not be present in legacy frames):
    double dangerDflt = MathMin(1.0, 0.45 * g_of_exhaustion + 0.55 * g_of_cancel_signal);
    g_of_execution_danger = Msg_GetDouble(scope, "of_execution_danger", dangerDflt);
+   DynPanel_UpdateBridgeStatus();
 }
 
 // ── Command bus dedup ring (R7) ────────────────────────────────
@@ -34850,6 +35250,19 @@ void Cmd_HandleRefineTPSL(string body) {
    }
    if (!OrderSelect(ticket, SELECT_BY_TICKET)) {
       PrintFormat("[Hub Cmd] REFINE_TPSL ticket=%d not found", ticket);
+      return;
+   }
+   // ITER 40 — CROSS-SYMBOL GUARD: refuse REFINE_TPSL if the ticket
+   //   belongs to a different chart symbol. Each chart instance must
+   //   only manage its own symbol's tickets — otherwise the SL/TP
+   //   computed for one symbol can pollute another (BTC SL on XAU).
+   if (OrderSymbol() != Symbol()) {
+      static datetime __rt_csLog = 0;
+      if (TimeCurrent() - __rt_csLog >= 60) {
+         __rt_csLog = TimeCurrent();
+         PrintFormat("[Hub Cmd] REFINE_TPSL CROSS_SYMBOL_SKIP ticket=%d orderSym=%s chartSym=%s",
+                     ticket, OrderSymbol(), Symbol());
+      }
       return;
    }
    // Owner-mismatch guard: only block when the ticket IS registered
@@ -35891,13 +36304,9 @@ bool OF_ShouldDiscourage(string strat) {
                                             g_news_nextEventTime = 0;
                                             g_news_lastUpdate = 0;
 
-                                            // News bridge requires AI EXE
-                                            // connection
-                                            if (!AIBridge_IsEnabled()) {
-                                              g_news_enabled = false;
+                                            if (!g_ai_enabled) {
                                               Print("[NewsBridge] Disabled "
-                                                    "- AI Bridge not "
-                                                    "available");
+                                                    "- AI bridge off (DLL?)");
                                               return;
                                             }
 
@@ -35913,25 +36322,24 @@ bool OF_ShouldDiscourage(string strat) {
                                           void NewsBridge_Update() {
                                             if (!g_news_enabled)
                                               return;
+                                            if (!g_zmq_initialized)
+                                              return;
 
-                                            // Only request news data every
-                                            // 60 seconds
-                                            if (TimeCurrent() -
-                                                    g_news_lastUpdate <
-                                                60)
+                                            // Poll hub news every 15s via REQ
+                                            // (panel lines + block state).
+                                            if (TimeCurrent() - g_news_lastUpdate < 15)
+                                              return;
+                                            if (!Hub_IsConnectedTruthful())
+                                              return;
+
+                                            string reply = "";
+                                            if (!ZMQ_SendRequest("{\"op\":\"news_query\"}", reply))
                                               return;
                                             g_news_lastUpdate = TimeCurrent();
-
-                                            // Request news data from AI EXE
-                                            if (AIBridge_IsConnected()) {
-                                              string request = StringFormat(
-                                                  "NEWS:%s|TF:%d", Symbol(),
-                                                  Period());
-                                              AIBridge_SendRequest(request);
+                                            if (StringLen(reply) > 0) {
+                                              AI_HandleNews(reply);
+                                              AI_ApplyNewsPanelFromBody(reply);
                                             }
-
-                                            // Check if we should block
-                                            // trading
                                             NewsBridge_CheckBlocking();
                                           }
 
@@ -37326,7 +37734,7 @@ void DrawTriggerArrow(int triggerType, int dir)
 
 }
 void DrawLabel(string name, int x, int y, string text, color clr, int corner = CORNER_LEFT_UPPER, int fontsize = 9) { if(ObjectFind(0,name)<0) ObjectCreate(0,name,OBJ_LABEL,0,0,0); ObjectSetInteger(0,name,OBJPROP_XDISTANCE,x); ObjectSetInteger(0,name,OBJPROP_YDISTANCE,y); ObjectSetString(0,name,OBJPROP_TEXT,text); ObjectSetInteger(0,name,OBJPROP_COLOR,clr); ObjectSetInteger(0,name,OBJPROP_CORNER,corner); ObjectSetInteger(0,name,OBJPROP_FONTSIZE,fontsize); }
-void DrawArrow(string name, datetime time, double price, int code, color clr, int width = 1) { if(ObjectFind(0,name)<0) ObjectCreate(0,name,OBJ_ARROW,0,time,price); ObjectSetInteger(0,name,OBJPROP_ARROWCODE,code); ObjectSetInteger(0,name,OBJPROP_COLOR,clr); ObjectSetInteger(0,name,OBJPROP_WIDTH,width); }
+void DrawArrow(string name, datetime time, double price, int code, color clr, int width = 1) { /* ITER42: chart arrows DISABLED — user contract: no arrows on MT4 chart. */ return; }
 void DrawProgressBar(string name, int x, int y, int w, int h, int percent) {
    percent = MathMax(0, MathMin(100, percent));
    int fillW = (int)(w * percent / 100.0);
@@ -37344,18 +37752,8 @@ void DrawProgressBar(string name, int x, int y, int w, int h, int percent) {
    ObjectSetInteger(0, bar, OBJPROP_BGCOLOR, barClr); ObjectSetInteger(0, bar, OBJPROP_CORNER, CORNER_LEFT_UPPER);
 }
 void DashTrigger_DrawArrow(string symbol, int dir, double price, datetime time, int triggerType = 0, string label = "") {
-   if (price <= 0 || time <= 0) return;
-   string name = "TRIG_" + symbol + "_" + IntegerToString((int)time);
-   int arrowCode = (dir > 0) ? 233 : (dir < 0) ? 234 : 251;
-   color arrowClr = (triggerType == TRIGGER_ENTRY) ? ((dir > 0) ? clrLime : clrRed)
-                  : (triggerType == TRIGGER_EXIT)  ? clrOrange
-                  : clrYellow;
-   if (ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_ARROW, 0, time, price);
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, arrowCode);
-   ObjectSetInteger(0, name, OBJPROP_COLOR,     arrowClr);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH,     2);
-   if (StringLen(label) > 0)
-      ObjectSetString(0, name, OBJPROP_TEXT, label);
+   /* ITER42: chart arrows DISABLED — user contract: no arrows on MT4 chart. */
+   return;
 }
 void DashTrigger_DrawZone(string id, double top, double bottom, color clr = clrYellow) {
    if (top <= bottom || Bars < 2) return;
@@ -37705,11 +38103,131 @@ void PnL_CalcFromHistory() {
    }
 }
 
-// --- NEWS BUFFER ---
+// Strip legacy hub format: trailing " HH:MM" and impact tag " [H]" / " [L]" etc.
+string OBL_CleanNewsDisplayText(string raw) {
+   if (StringLen(raw) == 0) return raw;
+   string s = raw;
+   int lb = StringFind(s, " [");
+   if (lb >= 0) {
+      int rb = StringFind(s, "]", lb);
+      if (rb == StringLen(s) - 1 && (rb - lb) <= 3)
+         s = StringSubstr(s, 0, lb);
+   }
+   int len = StringLen(s);
+   if (len >= 6) {
+      string tail = StringSubstr(s, len - 6);
+      ushort c0 = StringGetCharacter(tail, 0);
+      ushort c1 = StringGetCharacter(tail, 1);
+      ushort c3 = StringGetCharacter(tail, 3);
+      ushort c4 = StringGetCharacter(tail, 4);
+      if (c0 >= '0' && c0 <= '9' && c1 >= '0' && c1 <= '9' &&
+          StringGetCharacter(tail, 2) == ':' &&
+          c3 >= '0' && c3 <= '9' && c4 >= '0' && c4 <= '9')
+         s = StringSubstr(s, 0, len - 6);
+   }
+   while (StringLen(s) > 0 && StringGetCharacter(s, StringLen(s) - 1) == ' ')
+      s = StringSubstr(s, 0, StringLen(s) - 1);
+   return s;
+}
+
+// --- NEWS BUFFER (3 righe pannello MT4) — newest on row 0, shift down, drop oldest ---
+void OBL_ApplyNewsPanelLines(string l0, string l1, string l2) {
+   g_dynNews[0] = OBL_CleanNewsDisplayText(l0);
+   g_dynNews[1] = OBL_CleanNewsDisplayText(l1);
+   g_dynNews[2] = OBL_CleanNewsDisplayText(l2);
+   OBL_WriteNewsPanelFile();
+   GlobalVariableSet(GV_NEWS_PANEL_TS, (double)TimeCurrent());
+}
+
+void OBL_SplitNewsPack(string pack, string &l0, string &l1, string &l2) {
+   l0 = ""; l1 = ""; l2 = "";
+   if (StringLen(pack) == 0) return;
+   if (StringFind(pack, "|||") >= 0) {
+      int p1 = StringFind(pack, "|||");
+      int p2 = StringFind(pack, "|||", p1 + 3);
+      l0 = StringSubstr(pack, 0, p1);
+      if (p2 < 0)
+         l1 = StringSubstr(pack, p1 + 3);
+      else {
+         l1 = StringSubstr(pack, p1 + 3, p2 - (p1 + 3));
+         l2 = StringSubstr(pack, p2 + 3);
+      }
+      return;
+   }
+   ushort sep = 30;
+   string parts[];
+   int n = StringSplit(pack, sep, parts);
+   if (n > 0) l0 = parts[0];
+   if (n > 1) l1 = parts[1];
+   if (n > 2) l2 = parts[2];
+}
+
+void OBL_WriteNewsPanelFile() {
+   int h = FileOpen(OBL_NEWS_PANEL_FILE, FILE_WRITE | FILE_TXT | FILE_COMMON);
+   if (h == INVALID_HANDLE) return;
+   FileWriteString(h, g_dynNews[0] + "\n" + g_dynNews[1] + "\n" + g_dynNews[2] + "\n");
+   FileClose(h);
+}
+
+void OBL_ReadNewsPanelFile() {
+   if (g_zmq_is_master) return;
+   static datetime s_lastReadTs = 0;
+   datetime gvTs = (GlobalVariableCheck(GV_NEWS_PANEL_TS)
+                    ? (datetime)GlobalVariableGet(GV_NEWS_PANEL_TS) : 0);
+   if (gvTs > 0 && gvTs == s_lastReadTs) return;
+   s_lastReadTs = gvTs;
+   if (!FileIsExist(OBL_NEWS_PANEL_FILE, FILE_COMMON)) return;
+   int h = FileOpen(OBL_NEWS_PANEL_FILE, FILE_READ | FILE_TXT | FILE_COMMON);
+   if (h == INVALID_HANDLE) return;
+   g_dynNews[0] = FileReadString(h);
+   g_dynNews[1] = FileReadString(h);
+   g_dynNews[2] = FileReadString(h);
+   FileClose(h);
+   StringReplace(g_dynNews[0], "\r", "");
+   StringReplace(g_dynNews[1], "\r", "");
+   StringReplace(g_dynNews[2], "\r", "");
+}
+
+void DynPanel_UpdateNewsRows() {
+   if (!DynamicPanel) return;
+   OBL_ReadNewsPanelFile();
+   if (ObjectFind(0, "DYN_NEWS_0") < 0) return;
+   bool hubOK = Hub_IsConnectedTruthful();
+   bool hasLines = (StringLen(g_dynNews[0]) > 0 || StringLen(g_dynNews[1]) > 0 ||
+                    StringLen(g_dynNews[2]) > 0);
+   bool newsShow = hasLines;
+   string newsBadMsg = "NO LIVE NEWS";
+   if (!hubOK) newsBadMsg = "NEWS DISCONNECTED (hub down)";
+   else if (!News_FeedIsLive() && !hasLines) newsBadMsg = "NEWS FEED STALE";
+   static string s_prevNews0 = "";
+   bool newsChanged = (g_dynNews[0] != s_prevNews0);
+   s_prevNews0 = g_dynNews[0];
+   for (int n = 0; n < 3; n++) {
+      string nTxt;
+      if (newsShow) {
+         nTxt = (StringLen(g_dynNews[n]) > 0) ? OBL_CleanNewsDisplayText(g_dynNews[n]) : "—";
+      } else {
+         nTxt = (n == 0 ? newsBadMsg : "");
+      }
+      if (StringLen(nTxt) > 40) nTxt = StringSubstr(nTxt, 0, 40) + "…";
+      ObjectSetString(0, "DYN_NEWS_" + IntegerToString(n), OBJPROP_TEXT, nTxt);
+      ObjectSetInteger(0, "DYN_NEWS_" + IntegerToString(n), OBJPROP_COLOR,
+                       newsShow ? clrWhite : C'170,170,170');
+      ObjectSetInteger(0, "DYN_NEWS_" + IntegerToString(n), OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, "DYN_NEWS_" + IntegerToString(n), OBJPROP_FONT, HUB_FONT);
+   }
+   if (newsChanged) ChartRedraw(0);
+}
+
 void DynPanel_PushNews(string msg) {
+   if (StringLen(msg) == 0) return;
+   msg = OBL_CleanNewsDisplayText(msg);
+   if (StringLen(msg) == 0) return;
+   if (msg == g_dynNews[0]) return;
    g_dynNews[2] = g_dynNews[1];
    g_dynNews[1] = g_dynNews[0];
    g_dynNews[0] = msg;
+   OBL_WriteNewsPanelFile();
 }
 
 // ============================================================
@@ -40534,6 +41052,15 @@ void OBL_LifecycleTransition(int idx, int newState, string reason) {
                    OBL_LifecycleStateName(newState),
                    reason),
       C'200,160,255');
+   // ITER 43 — AGGRESSIVE OBJECT CLEANUP on terminal transitions.
+   //   Per user spec: "aggressively remove invalidated projected setup
+   //   objects / stale ladder visuals / dead staged objects". When a
+   //   setup hits a terminal state, immediately wipe its OBL_STG_<id>_*
+   //   chart projections so the chart stays readable on XAUUSD M1.
+   if (newState == STG_INVALIDATED || newState == STG_EXPIRED ||
+       newState == STG_REPLACED    || newState == STG_CANCELLED) {
+      Staging_CleanupObjects(idx);
+   }
 }
 
 // Returns true if the staged setup's broker pending has been filled
@@ -40569,23 +41096,40 @@ bool OBL_LifecycleStructureBroken(int idx) {
    else                          return (cur > inv);
 }
 
-// Returns true if price has jumped past the projected entry (limit missed).
-// ITER 33 — softened from 1.50×ATR to 2.50×ATR. Moderate overshoots are now
-// handled by RE_ANCHOR logic in OBL_LifecycleTick (Issue 1 surgical fix).
 bool OBL_LifecycleEntryMissed(int idx) {
    if (idx < 0 || idx >= g_staged_count) return false;
    double ep = g_staged[idx].entry_proj;
    if (ep <= 0) return false;
    double atrL = g_staged[idx].atr_at_detect;
    if (atrL <= 0) atrL = iATR(Symbol(), Period(), 14, 1);
-   double far = atrL * 2.50;        // ITER33: 1.50 → 2.50 (anti-microstructure)
+   // ITER 42 — adaptive overshoot cap by symbol class:
+   //   CRYPTO/METAL: 3.50×ATR (BTC/XAU on M1 has huge micro-noise)
+   //   INDEX:        3.00×ATR
+   //   FX:           2.50×ATR (cleaner tick structure)
+   //   Stops the "price jumped past entry" → instant invalidation
+   //   that was filling XAUUSD M1 with clutter.
+   // ITER 43 — widened further AND TF-aware. User report: "price
+   //   jumped past entry" still kills too many setups on XAUUSD M1
+   //   and BTCUSD M1. Multipliers raised; smaller TF → higher cap
+   //   because micro-noise dominates. Final invalidation only on
+   //   truly catastrophic overshoot.
+   int symClass = SymClass();
+   double mulOS = (symClass == SYMC_CRYPTO || symClass == SYMC_METAL) ? 5.00
+                : (symClass == SYMC_INDEX                              ) ? 4.00
+                :                                                             3.50;
+   int per = Period();
+   if      (per <= PERIOD_M1)  mulOS *= 1.30;          // M1 noise compensation
+   else if (per <= PERIOD_M5)  mulOS *= 1.15;
+   else if (per >= PERIOD_H1)  mulOS *= 0.90;          // higher TF = tighter
+   double far = atrL * mulOS;
    double cur = (g_staged[idx].dir == +1 ? Bid : Ask);
    if (g_staged[idx].dir == +1) return (cur > ep + far);
    else                          return (cur < ep - far);
 }
 
-// ITER 33 — RE_ANCHOR helper: returns true if a moderate overshoot can be
-// re-anchored (price within 0.20×ATR … 2.50×ATR past entry, structure intact).
+// ITER 33/42 — RE_ANCHOR helper extended: window 0.20×ATR ÷ adaptive
+//   overshoot cap. Allows soft re-anchor on any overshoot below the
+//   adaptive hard-invalidation threshold.
 bool OBL_LifecycleEntryOvershootSoft(int idx) {
    if (idx < 0 || idx >= g_staged_count) return false;
    double ep = g_staged[idx].entry_proj;
@@ -40593,9 +41137,22 @@ bool OBL_LifecycleEntryOvershootSoft(int idx) {
    double atrL = g_staged[idx].atr_at_detect;
    if (atrL <= 0) atrL = iATR(Symbol(), Period(), 14, 1);
    if (atrL <= 0) return false;
+   int symClass = SymClass();
+   // ITER 43 — multipliers aligned to hard cap (5.0 / 4.0 / 3.5) with
+   //   the same TF adjustment so the soft re-anchor band covers the
+   //   whole 0.20×ATR → hard-invalidation range. Without this the
+   //   soft band ended before the hard cap and produced a dead zone
+   //   where the setup just sat there waiting to die.
+   double mulOS = (symClass == SYMC_CRYPTO || symClass == SYMC_METAL) ? 5.00
+                : (symClass == SYMC_INDEX                              ) ? 4.00
+                :                                                             3.50;
+   int per = Period();
+   if      (per <= PERIOD_M1)  mulOS *= 1.30;
+   else if (per <= PERIOD_M5)  mulOS *= 1.15;
+   else if (per >= PERIOD_H1)  mulOS *= 0.90;
    double cur = (g_staged[idx].dir == +1 ? Bid : Ask);
    double os  = (g_staged[idx].dir == +1 ? (cur - ep) : (ep - cur));
-   return (os > atrL * 0.20 && os < atrL * 2.50);
+   return (os > atrL * 0.20 && os < atrL * mulOS);
 }
 
 // Locks updates when price is close enough to fill (≤ 0.10×ATR).
@@ -40714,7 +41271,39 @@ void OBL_LifecycleTick() {
          continue;
       }
       if (s != STG_DEPLOYED && OBL_LifecycleEntryMissed(i)) {
-         OBL_LifecycleTransition(i, STG_INVALIDATED, "price jumped past entry");
+         // ITER 43 — structure-survival check before hard kill.
+         //   Per user spec ("only full invalidate when parent structure
+         //   is truly broken"): if invalidation level still holds AND
+         //   HTF still agrees, promote to PENDING_ELIGIBLE and re-anchor
+         //   to current price instead of killing the setup.
+         if (!OBL_LifecycleStructureBroken(i) &&
+             !OBL_LifecycleHTFInvalid(i)) {
+            double _atrR2 = g_staged[i].atr_at_detect;
+            if (_atrR2 <= 0) _atrR2 = iATR(Symbol(), Period(), 14, 1);
+            double _curR2 = (g_staged[i].dir == +1 ? Bid : Ask);
+            double _newEp2 = (g_staged[i].dir == +1 ? _curR2 - _atrR2 * 0.10
+                                                    : _curR2 + _atrR2 * 0.10);
+            double _shift2 = _newEp2 - g_staged[i].entry_proj;
+            g_staged[i].entry_proj += _shift2;
+            if (g_staged[i].sl_proj    > 0) g_staged[i].sl_proj    += _shift2;
+            if (g_staged[i].tp1_proj   > 0) g_staged[i].tp1_proj   += _shift2;
+            if (g_staged[i].tp2_proj   > 0) g_staged[i].tp2_proj   += _shift2;
+            if (g_staged[i].tp3_proj   > 0) g_staged[i].tp3_proj   += _shift2;
+            if (g_staged[i].tpmax_proj > 0) g_staged[i].tpmax_proj += _shift2;
+            if (s != STG_PENDING_ELIGIBLE) {
+               OBL_LifecycleTransition(i, STG_PENDING_ELIGIBLE,
+                  "extreme overshoot but structure intact — re-anchored");
+            } else {
+               static datetime __lc_pe_log = 0;
+               if (TimeCurrent() - __lc_pe_log >= 5) {
+                  __lc_pe_log = TimeCurrent();
+                  PrintFormat("[Lifecycle] stg#%d %s hard-band re-anchor (struct intact)",
+                              g_staged[i].stg_id, g_staged[i].owner);
+               }
+            }
+            continue;
+         }
+         OBL_LifecycleTransition(i, STG_INVALIDATED, "price jumped past entry (structure broken)");
          continue;
       }
       // 5. LOCK for fill when price approaches
@@ -41233,14 +41822,29 @@ bool OBL_FilterGrid_OK() {
    double tff   = OBL_MiniTFFactor();
    double adx   = iADX(Symbol(), Period(), 14, PRICE_CLOSE, MODE_MAIN, 1);
    double ratio = OBL_MiniAtrRatio();
-   // ITER33 → ITER35: relaxed further — log showed ADX=72 blocking on M1.
-   //   M1 noise inflates ADX hugely on crypto/metal; raise cap so Grid
-   //   only blocks on TRULY extreme trend regimes.
-   double adxCap = 45.0 + 15.0 * tff;          // M1≈51 · M15=60 · H1=67
-   double atrCap = 1.50 + 0.30 * tff;          // ITER35: 1.30→1.50, 0.20→0.30
-   if (adx   >= adxCap) { OBL_FilterEmit(1, "Grid", StringFormat("skip · strongly trending ADX=%.0f (cap %.0f)", adx, adxCap), C'255,170,80'); return false; }
-   if (ratio >= atrCap) { OBL_FilterEmit(1, "Grid", StringFormat("skip · ATR expanding %.2fx (cap %.2fx)", ratio, atrCap), C'255,170,80'); return false; }
-   if (!OBL_ConfluenceGate(1, "Grid")) return false;
+   // ITER33 → ITER35 → ITER40: relaxed even further — log showed ADX=72
+   //   blocking on M1. M1 noise inflates ADX hugely on crypto/metal;
+   //   ITER40 raises cap to 60+18·tff so Grid only blocks on extreme trends.
+   double adxCap = 60.0 + 18.0 * tff;          // M1≈67 · M15=78 · H1=89
+   double atrCap = 2.00 + 0.40 * tff;          // ITER40: 1.50→2.00 · 0.30→0.40
+   // ITER 41 — Grid filter NEVER hard-blocks on ADX/ATR.
+   //   Context info is logged once per minute; the regime classifier
+   //   in Strategy_Grid_Logic already handles BLOCKED for true
+   //   catastrophic expansion. Owner-decision engine (OwnerDecide)
+   //   adjusts aggression based on context.
+   if (adx >= adxCap || ratio >= atrCap) {
+      static datetime __gridFilterLog = 0;
+      if (TimeCurrent() - __gridFilterLog >= 60) {
+         __gridFilterLog = TimeCurrent();
+         OBL_FilterEmit(1, "Grid",
+            StringFormat("context · ADX=%.0f atrRatio=%.2fx (high — aggression reduced, not blocked)",
+                         adx, ratio),
+            C'255,200,120');
+      }
+   }
+   // ITER 41 — Confluence gate is now NEVER blocking for Grid (it's a
+   //   basket strategy; confluence is bonus, not requirement).
+   OBL_ConfluenceGate(1, "Grid");
    return true;
 }
 
@@ -41254,9 +41858,12 @@ bool OBL_FilterBreakout_OK() {
    double ratio = OBL_MiniAtrRatio();
    double atr   = iATR(Symbol(), Period(), 14, 1);
    // ITER35: ADX min from 11+2*tff → 9+1.5*tff
-   double adxMin = 9.0 + 1.5 * tff;
+   // ITER43: ADX min lowered further 9→7 base; M1/M5 micro-breakouts.
+   double adxMin = 7.0 + 1.2 * tff;
    // ITER35: ATR ratio min from 0.95+0.02*tff → 0.85+0.02*tff
-   double atrMin = 0.85 + 0.02 * tff;
+   // ITER43: ATR ratio min lowered 0.85→0.70 so XAUUSD M5 quiet
+   //   periods stop killing Breakout setups outright.
+   double atrMin = 0.70 + 0.02 * tff;
    if (adxN < adxMin)                   { OBL_FilterEmit(2, "Breakout", StringFormat("skip · ADX too low (%.0f, need >%.0f)", adxN, adxMin), C'170,170,170'); return false; }
    if (ratio < atrMin)                  { OBL_FilterEmit(2, "Breakout", StringFormat("skip · ATR not expanding (%.2fx need >%.2fx)", ratio, atrMin), C'170,170,170'); return false; }
    // ITER 19 Fase 2 — PRO additions: require either prior compression (squeeze breakout)
@@ -41269,13 +41876,52 @@ bool OBL_FilterBreakout_OK() {
    bool dispBear = OBL_DetectDisplacement(-1, 1, atr);
    bool dispOK = (htfBR > 0 ? dispBull : (htfBR < 0 ? dispBear : (dispBull || dispBear)));
    if (!compress && !dispOK) {
-      OBL_FilterEmit(2, "Breakout", "skip · no compression, no displacement (false break risk)", C'200,160,80');
-      return false;
+      // ITER 41 — Breakout micro-fallback: accept if structure-quality
+      //   signals confirm even without textbook compression+displacement.
+      //   This covers M1/M5 micro-breakouts on indices and crypto where
+      //   compression rarely lasts 20 bars in a clean form.
+      // ITER 42 — EXPANDED per user spec ("allow valid continuation
+      //   breakouts even when compression is not perfect; allow stronger
+      //   structure to compensate for slightly messy breakout"):
+      //   structural fallback now also accepts CHoCH, raid-return,
+      //   mitigation, breaker, or partial-displacement (rng >= 0.85×ATR
+      //   in any of last 3 bars in HTF direction).
+      bool mssAny  = OBL_DetectMSS(+1, 6) || OBL_DetectMSS(-1, 6);
+      bool brkAny  = (htfBR != 0);
+      int  _wd = 0; double _wp = 0.0;
+      bool wickAny = OBL_IntrabarWickEvent(_wd, _wp);
+      bool chochAny = OBL_DetectCHoCH(+1, 10) || OBL_DetectCHoCH(-1, 10);
+      bool raidAny  = OBL_DetectRaidReturn(htfBR != 0 ? htfBR : +1, 5) ||
+                      OBL_DetectRaidReturn(htfBR != 0 ? htfBR : -1, 5);
+      double _bobp = 0.0, _bomp = 0.0;
+      bool brBlkAny = OBL_DetectBreaker(+1, _bobp) || OBL_DetectBreaker(-1, _bobp);
+      bool mitAny   = OBL_DetectMitigation(+1, _bomp) || OBL_DetectMitigation(-1, _bomp);
+      bool partialDispBO = false;
+      int bDir = (htfBR != 0 ? htfBR : (dispBull ? +1 : (dispBear ? -1 : 0)));
+      if (bDir != 0) {
+         for (int bb = 1; bb <= 3 && !partialDispBO; bb++) {
+            double rngBb = iHigh(Symbol(), Period(), bb) - iLow(Symbol(), Period(), bb);
+            double oBb   = iOpen(Symbol(), Period(), bb);
+            double cBb   = iClose(Symbol(), Period(), bb);
+            bool   dirBb = (bDir > 0 ? cBb > oBb : cBb < oBb);
+            if (rngBb >= atr * 0.85 && dirBb) partialDispBO = true;
+         }
+      }
+      bool structFallback = mssAny || (brkAny && wickAny) || chochAny ||
+                            raidAny || brBlkAny || mitAny || partialDispBO;
+      if (!structFallback) {
+         OBL_FilterEmit(2, "Breakout", "skip · no compression/displacement/MSS/CHoCH/raid/breaker/mit/partial-disp", C'200,160,80');
+         return false;
+      }
+      // fall through — micro-breakout accepted on structural confirmation.
    }
    bool failedBull = OBL_DetectFailedBreakout(-1, 20);   // failed BUY breakout = reverse setup
    bool failedBear = OBL_DetectFailedBreakout(+1, 20);
-   if ((htfBR > 0 && failedBull) || (htfBR < 0 && failedBear)) {
-      OBL_FilterEmit(2, "Breakout", "skip · failed breakout reclaim detected", C'200,160,80');
+   // ITER 41 — failed-BO is a SOFT context (Reverse owns it); do not
+   //   hard-block Breakout here. We only skip if BOTH directions failed
+   //   simultaneously (truly broken structure).
+   if (failedBull && failedBear) {
+      OBL_FilterEmit(2, "Breakout", "skip · failed breakout reclaim BOTH directions", C'200,160,80');
       return false;
    }
    string tag = "";
@@ -41411,12 +42057,50 @@ bool OBL_FilterSMC_OK() {
                  OBL_DetectDisplacement(dir, 3, atr);
    if (!dispOK) {
       // ITER 32 — reclaim/raid override.
+      // ITER 41 — broader structural override: any of wick / raid /
+      //   rejection-block / MMBM/MMSM keeps SMC alive even without
+      //   textbook displacement. Stops "skip · structure break without
+      //   displacement" being a near-hard kill.
       int _wd = 0; double _wp = 0.0;
-      bool wick = OBL_IntrabarWickEvent(_wd, _wp) && _wd == dir;
-      bool raid = OBL_DetectRaidReturn(dir, 4);
-      if (!(wick || raid)) {
-         OBL_FilterEmit(4, "SMC", "skip · structure break without displacement (no reclaim)", C'200,160,80');
+      bool wick     = OBL_IntrabarWickEvent(_wd, _wp) && _wd == dir;
+      bool raid     = OBL_DetectRaidReturn(dir, 4);
+      bool rejBlock = OBL_DetectRejectionBlock(dir);
+      bool mmModel  = (dir > 0 ? OBL_DetectMMBM() : OBL_DetectMMSM());
+      bool mtAtFvg  = OBL_AtFVG_MT();
+      // ITER 42 — PARTIAL DISPLACEMENT: per user spec, SMC must stop
+      //   behaving as a perfect-displacement-only detector. If structure
+      //   is strong (multiple triggers) AND any of last 3 bars showed a
+      //   ≥0.85×ATR range in the correct direction, accept as partial
+      //   displacement. Removes "skip · structure break without
+      //   displacement" being the dominant SMC skip reason.
+      bool partialDisp = false;
+      int  structureCount =
+           (int)(bosBull || bosBear) + (int)(chochBull || chochBear) +
+           (int)(mssBull || mssBear) + (int)(brkBull   || brkBear)   +
+           (int)(mitBull || mitBear);
+      // ITER 43 — threshold lowered 2→1 per user spec ("strong
+      //   structural break + partial reclaim + acceptable displacement
+      //   to survive"). Even a single structure trigger now qualifies
+      //   the partial-disp override when combined with a sub-textbook
+      //   body that still shows directional intent.
+      if (structureCount >= 1) {
+         for (int pb = 1; pb <= 3 && !partialDisp; pb++) {
+            double rngPb = iHigh(Symbol(), Period(), pb) - iLow(Symbol(), Period(), pb);
+            double oPb   = iOpen(Symbol(), Period(), pb);
+            double cPb   = iClose(Symbol(), Period(), pb);
+            bool   dirPb = (dir > 0 ? cPb > oPb : cPb < oPb);
+            // ITER 43 — body threshold lowered 0.85 → 0.70×ATR
+            if (rngPb >= atr * 0.70 && dirPb) partialDisp = true;
+         }
+      }
+      if (!(wick || raid || rejBlock || mmModel || mtAtFvg || partialDisp)) {
+         OBL_FilterEmit(4, "SMC", "skip · structure break without displacement (no reclaim / wick / raid / rejection / MM model / FVG-MT / partial-disp)", C'200,160,80');
          return false;
+      }
+      if (partialDisp && !(wick || raid || rejBlock || mmModel || mtAtFvg)) {
+         OBL_FilterEmit(4, "SMC",
+            StringFormat("OK · partial-disp override (structures=%d)", structureCount),
+            C'127,209,127');
       }
    }
    // ITER 32 — inducement-against now SOFT: tag it for SupportEngines
@@ -41445,24 +42129,64 @@ bool OBL_FilterICT_OK() {
    int trySide  = (htfICT != 0 ? htfICT : (sweep != 0 ? -sweep : 0));   // opposite of sweep dir is entry side
    if (trySide == 0) trySide = +1;
    // Base gate: killzone OR sweep on low TF; killzone AND sweep on M15+
+   // ITER 42 — Per user spec, ICT must stop being killzone-and-sweep
+   //   binary on M15+. Now requires (kzNow OR sweep) AND a structural
+   //   anchor (HTF bias, MSS, breaker, mitigation, raid, or rejection).
+   //   Hard skip only when NONE of these contexts is alive.
+   bool ictMss     = OBL_DetectMSS(+1, 8) || OBL_DetectMSS(-1, 8);
+   double _icbpx = 0.0, _icmpx = 0.0;
+   bool ictBreak   = OBL_DetectBreaker(+1, _icbpx) || OBL_DetectBreaker(-1, _icbpx);
+   bool ictMit     = OBL_DetectMitigation(+1, _icmpx) || OBL_DetectMitigation(-1, _icmpx);
+   bool ictRaid    = OBL_DetectRaidReturn(trySide, 4);
+   bool ictRej     = OBL_DetectRejectionBlock(trySide);
+   bool ictHasStruct = (htfICT != 0) || ictMss || ictBreak || ictMit || ictRaid || ictRej;
    if (!tfLow) {
-      if (!kzNow)     { OBL_FilterEmit(5, "ICT", "skip · outside killzone", C'170,170,170'); return false; }
-      if (sweep == 0) { OBL_FilterEmit(5, "ICT", "skip · no liquidity sweep", C'170,170,170'); return false; }
+      // ITER 42 — soft AND: accept kzNow OR sweep when structural
+      //   anchor is alive; legacy strict AND only when no structure.
+      if (!kzNow && sweep == 0) {
+         OBL_FilterEmit(5, "ICT", "skip · outside killzone & no liquidity sweep", C'170,170,170');
+         return false;
+      }
+      if (!(kzNow && sweep != 0) && !ictHasStruct) {
+         OBL_FilterEmit(5, "ICT", "skip · partial KZ/sweep without structural anchor (HTF/MSS/breaker/mit/raid/rej)", C'200,160,80');
+         return false;
+      }
    } else {
-      if (!kzNow && sweep == 0) { OBL_FilterEmit(5, "ICT", "skip · no killzone & no sweep", C'170,170,170'); return false; }
+      if (!kzNow && sweep == 0 && !ictHasStruct) {
+         OBL_FilterEmit(5, "ICT", "skip · no killzone & no sweep & no structure", C'170,170,170');
+         return false;
+      }
    }
    // ITER 19 Fase 2 — OTE quality + displacement requirement.
    // Optimal Trade Entry zone: 0.62-0.79 retracement of recent impulse, peak at 0.705.
    // ITER 33 SURGICAL FIX (Issue 4 — ICT parity): OTE threshold relaxed
    //   from 0.20 → 0.12 so imperfect-but-valid OTE readings still fire
    //   when displacement supports them.
+   // ITER 40: relaxed further to 0.06 — minimum any-OTE reading admits.
+   // ITER 43: relaxed further to 0.03 + structural-anchor override
+   //   widened so weak-OTE never single-handedly kills setups.
    double oteQ = OBL_OTEQuality(trySide, 20);
    bool dispOK = OBL_DetectDisplacement(trySide, 1, atr) ||
                  OBL_DetectDisplacement(trySide, 2, atr) ||
                  OBL_DetectDisplacement(trySide, 3, atr);
-   if (oteQ < 0.12 && !dispOK) {
-      OBL_FilterEmit(5, "ICT", StringFormat("skip · weak OTE (%.2f) and no displacement", oteQ), C'200,160,80');
-      return false;
+   if (oteQ < 0.03 && !dispOK) {
+      // ITER 42 — Per user spec, ICT must be less OTE-binary. Weak OTE
+      //   must NOT auto-kill an otherwise valid setup when reclaim /
+      //   liquidity / matrix context is still alive. We already have
+      //   ictHasStruct (HTF/MSS/breaker/mit/raid/rej) from above; if
+      //   that is true, accept and downgrade quality elsewhere instead
+      //   of hard-skipping.
+      int _ictwd = 0; double _ictwp = 0.0;
+      bool ictWick = OBL_IntrabarWickEvent(_ictwd, _ictwp) && _ictwd == trySide;
+      bool oteSoft = ictHasStruct || ictWick;
+      if (!oteSoft) {
+         OBL_FilterEmit(5, "ICT", StringFormat("skip · weak OTE (%.2f) and no displacement and no structural context", oteQ), C'200,160,80');
+         return false;
+      }
+      OBL_FilterEmit(5, "ICT",
+         StringFormat("OK · weak-OTE softened (q=%.2f, struct=%d, wick=%d)",
+                      oteQ, (int)ictHasStruct, (int)ictWick),
+         C'127,209,127');
    }
    // Judas swing detection: opposite-direction sweep AT killzone open → liquidity raid.
    bool judas = (sweep != 0 && sweep != trySide && kzNow);
@@ -41493,10 +42217,20 @@ bool OBL_FilterReverse_OK() {
    double rsiLow, rsiHigh;
    // ITER35: relax RSI windows so reverse can fire on moderate moves
    //   when structural triggers (climax / SMT / failed-BO) confirm.
-   if      (reg == 0) { rsiLow = 44.0; rsiHigh = 56.0; }
-   else if (reg == 2) { rsiLow = 34.0; rsiHigh = 66.0; }
-   else               { rsiLow = 40.0; rsiHigh = 60.0; }
-   if (adx >= adxCap)              { OBL_FilterEmit(6, "Reverse", StringFormat("skip · trending ADX=%.0f (cap %.0f)", adx, adxCap), C'170,170,170'); return false; }
+   // ITER38: further relax — XAUUSD ranging mostly stays around 50.
+   //   NORMAL regime now 47/53 (was 40/60). HIGH unchanged. LOW 42/58.
+   // ITER 42: Per user spec ("ADX trending must stop killing Reverse;
+   //   climax/wick/failed-BO/sweep-return must weigh more"), widen
+   //   the NORMAL/LOW windows further so Reverse stays alive when
+   //   structural reversal triggers are present.
+   if      (reg == 0) { rsiLow = 42.0; rsiHigh = 58.0; }     // ITER43: 44/56→42/58
+   else if (reg == 2) { rsiLow = 34.0; rsiHigh = 66.0; }     // ITER43: 36/64→34/66
+   else               { rsiLow = 41.0; rsiHigh = 59.0; }     // ITER43: 43/57→41/59
+   // ITER 41 — ADX is now a CONTEXT WEIGHT, never a hard kill.
+   //   If structural reversal triggers are strong (failBO+climax,
+   //   OR climax+SMT, OR rejection wick on RSI extreme), high ADX
+   //   actually IMPROVES the reversal odds (trend exhaustion).
+   //   We only WARN at very-high ADX; we never return false on it.
    if (rsi > rsiLow && rsi < rsiHigh) { OBL_FilterEmit(6, "Reverse", StringFormat("skip · RSI neutral (%.0f, need <%.0f or >%.0f)", rsi, rsiLow, rsiHigh), C'170,170,170'); return false; }
    // ITER 19 Fase 2 — require ONE of:
    //   (a) failed breakout reclaim (institutional reversal signature)
@@ -41517,18 +42251,34 @@ bool OBL_FilterReverse_OK() {
    if (rng1 > 0) {
       double upperWick = h1 - MathMax(o1, c1);
       double lowerWick = MathMin(o1, c1) - l1;
-      if (dir < 0 && upperWick >= rng1 * 0.60) rejection = true;     // SELL setup, upper wick
-      if (dir > 0 && lowerWick >= rng1 * 0.60) rejection = true;     // BUY setup, lower wick
+      // ITER 39.5 — rejection wick threshold relaxed from 60% → 40%.
+      //   Allows softer rejection patterns on XAUUSD/ranging markets.
+      if (dir < 0 && upperWick >= rng1 * 0.40) rejection = true;     // SELL setup, upper wick
+      if (dir > 0 && lowerWick >= rng1 * 0.40) rejection = true;     // BUY setup, lower wick
    }
-   if (!failedBO && !climax && !smt && !rejection) {
-      OBL_FilterEmit(6, "Reverse", "skip · no failed-BO / climax / SMT / rejection wick", C'200,160,80');
+   // ITER 39.5 — structural-trigger fallback: if RSI is truly extreme
+   //   (>=70 or <=30) the reversal signal is strong enough on its own,
+   //   no failed-BO / climax / SMT / rejection wick required.
+   // ITER 42: Add SWEEP-RETURN as 6th alternate trigger (per user spec:
+   //   "climax / wick rejection / failed breakout / sweep-return must
+   //   weigh more"). Sweep-return = liquidity raid + reclaim against
+   //   the reversal direction. Also relax RSI-extreme thresholds to
+   //   ≤32 / ≥68 so near-extreme readings still bypass other gates.
+   bool sweepReturn = OBL_DetectRaidReturn(dir, 5);
+   // ITER 43 — RSI-extreme thresholds relaxed further per user spec
+   //   ("ADX must stop acting like near-death sentence"). 32/68 → 34/66.
+   bool rsiExtreme = (rsi <= 34.0 || rsi >= 66.0);
+   if (!failedBO && !climax && !smt && !rejection && !sweepReturn && !rsiExtreme) {
+      OBL_FilterEmit(6, "Reverse", "skip · no failed-BO / climax / SMT / rejection wick / sweep-return", C'200,160,80');
       return false;
    }
    string tag = "";
-   if (failedBO)  tag += "failBO ";
-   if (climax)    tag += "climax ";
-   if (smt)       tag += "SMT ";
-   if (rejection) tag += "rejWick ";
+   if (failedBO)    tag += "failBO ";
+   if (climax)      tag += "climax ";
+   if (smt)         tag += "SMT ";
+   if (rejection)   tag += "rejWick ";
+   if (sweepReturn) tag += "sweepRet ";
+   if (rsiExtreme)  tag += "rsiExt ";
    OBL_FilterEmit(6, "Reverse", StringFormat("OK · RSI=%.0f · %s", rsi, tag), C'127,209,127');
    if (!OBL_ConfluenceGate(6, "Reverse")) return false;
    return true;
@@ -41768,14 +42518,38 @@ void OBL_Ladder_Tick() {
       // ITER 34 — LIVE_TRAIL widening post-TPMAX (RUNNER mode):
       //   when reach >= 4 (TPMAX hit), widen the trail to 0.65×ATR so the
       //   trade has more room to ride the trend. Pre-TPMAX trail stays at 0.40.
+      // ITER 38 — TPMAX RE-TOUCH CLOSE (user request):
+      //   if the trade is in RUNNER mode (reach>=4) and price has moved
+      //   beyond TPMAX (locked profit), then comes BACK and re-touches
+      //   the TPMAX level, close immediately to lock the gain. Trend
+      //   was favorable → went past TPMAX → now returning = exit signal.
       if (g_lad_state[i] == LIVE_TRAIL && g_lad_reach[i] >= 4) {
          double atrRun = iATR(Symbol(), Period(), 14, 1);
          double trailBufRun = atrRun * 0.65;
+         double tpmaxLevel = g_lad_tpmax[i];
+         double curRun = (side == OP_BUY ? Bid : Ask);
+         // RE-TOUCH check: did we go past TPMAX and then come back?
+         //   For BUY: price went >TPMAX (HFP>TPMAX), now Bid <= TPMAX.
+         //   For SELL: price went <TPMAX (HFP<TPMAX), now Ask >= TPMAX.
+         bool reTouched = false;
+         if (side == OP_BUY  && g_lad_hfp[i] > tpmaxLevel && curRun <= tpmaxLevel) reTouched = true;
+         if (side == OP_SELL && g_lad_hfp[i] < tpmaxLevel && curRun >= tpmaxLevel) reTouched = true;
+         if (reTouched) {
+            double closePxRun = (side == OP_BUY ? Bid : Ask);
+            if (OrderClose(tk, OrderLots(), closePxRun, 5, clrWhite)) {
+               SmartLog_Brain("LADDER",
+                  StringFormat("#%d  TPMAX re-touch @ %.5f (peak HFP=%.5f) — RUNNER closes at TPMAX (gain locked)",
+                               tk, curRun, g_lad_hfp[i]),
+                  C'127,255,127');
+               OBL_Ladder_Forget(tk);
+               continue;
+            }
+         }
+         // Otherwise: widen trail behind HFP.
          double newRunVSL = (side == OP_BUY)
                             ? g_lad_hfp[i] - trailBufRun
                             : g_lad_hfp[i] + trailBufRun;
          // Never let RUNNER vSL go below TPMAX (profit locked).
-         double tpmaxLevel = g_lad_tpmax[i];
          if (side == OP_BUY && newRunVSL < tpmaxLevel) newRunVSL = tpmaxLevel;
          if (side == OP_SELL && newRunVSL > tpmaxLevel) newRunVSL = tpmaxLevel;
          bool rImprove = (side == OP_BUY
@@ -42226,10 +43000,165 @@ string OBL_OperatingMode(color &outClr) {
 }
 
 // ============================================================
+// ITER 42 → ITER 43 — TRUTHFUL HUB / BOOKMAP / NEWS / ACCOUNT
+// ------------------------------------------------------------
+// Per user spec (ITER 43): the EX4 panel HUB and BOOKMAP rows must
+// show ONLY "CONNECTED" or "DISCONNECTED" — no SOCKET_READY shown as
+// a positive substitute, no "(Ns)" age suffix in the user-facing
+// text, no synthetic "LIVE" placeholder on the NEWS row.
+// Internally we still track the full state machine for logs and
+// debugging via Hub_InternalState() / Bookmap_InternalState() /
+// News_InternalState(); only the panel rendering is simplified.
+//
+// Connection truth definitions (ITER 43):
+//   HUB        CONNECTED only when sockets initialised AND last
+//              heartbeat received within ZMQ_HEARTBEAT_TIMEOUT_S.
+//   BOOKMAP    CONNECTED only when last orderflow frame within
+//              OF_FRESH_TTL_SEC.
+//   NEWS feed  LIVE only when last news cache within 300s.
+//   ACCOUNT    CONNECTED only when broker IsConnected() AND
+//              account number > 0 (not a tester stub).
+// ============================================================
+
+datetime OBL_GetHubHeartbeatTs() {
+   if (g_ai_lastHeartbeat > 0) return g_ai_lastHeartbeat;
+   if (GlobalVariableCheck(GV_HUB_LAST_HB))
+      return (datetime)GlobalVariableGet(GV_HUB_LAST_HB);
+   return 0;
+}
+
+datetime OBL_GetOrderflowTs() {
+   if (g_of_lastTs > 0) return g_of_lastTs;
+   if (GlobalVariableCheck(GV_OF_LAST_TS))
+      return (datetime)GlobalVariableGet(GV_OF_LAST_TS);
+   return 0;
+}
+
+void OBL_SyncHubHeartbeatGV() {
+   datetime ts = (g_ai_lastHeartbeat > 0 ? g_ai_lastHeartbeat : TimeCurrent());
+   GlobalVariableSet(GV_HUB_LAST_HB, (double)ts);
+}
+
+void OBL_SyncOrderflowGV() {
+   if (g_of_lastTs > 0)
+      GlobalVariableSet(GV_OF_LAST_TS, (double)g_of_lastTs);
+}
+
+bool Hub_IsConnectedTruthful() {
+   datetime hbTs = OBL_GetHubHeartbeatTs();
+   if (hbTs == 0) return false;
+   return ((TimeCurrent() - hbTs) <= ZMQ_HEARTBEAT_TIMEOUT_S);
+}
+
+bool Bookmap_IsConnectedTruthful() {
+   if (!Hub_IsConnectedTruthful()) return false;
+   datetime ofTs = OBL_GetOrderflowTs();
+   if (ofTs > 0 && (TimeCurrent() - ofTs) <= OF_FRESH_TTL_SEC) return true;
+   if (g_ai_lastBookmapTs > 0 &&
+       (TimeCurrent() - g_ai_lastBookmapTs) <= 60) return true;
+   return false;
+}
+
+bool Account_IsConnectedTruthful() {
+   // Broker socket + a non-zero account number is the minimum
+   // bar. Tester runs and disconnected terminals fail this.
+   if (!IsConnected()) return false;
+   if (AccountNumber() <= 0) return false;
+   return true;
+}
+
+// Internal granular state machine (kept for log/debug callers).
+string Hub_TruthfulState(color &outClr) {
+   if (!g_zmq_initialized) {
+      outClr = C'170,170,170';
+      if (StringLen(g_ai_status) > 0 &&
+          (g_ai_status == "DISABLED_TESTER" ||
+           g_ai_status == "DISABLED_NO_DLL" ||
+           g_ai_status == "ZMQ_CONNECT_FAILED")) {
+         return g_ai_status;
+      }
+      return "DISCONNECTED";
+   }
+   if (g_ai_lastHeartbeat == 0) {
+      outClr = C'255,200,120';
+      return "SOCKET_READY";
+   }
+   int age = (int)(TimeCurrent() - g_ai_lastHeartbeat);
+   if (age > ZMQ_HEARTBEAT_TIMEOUT_S) {
+      outClr = C'255,91,91';
+      return StringFormat("HUB_TIMEOUT (%ds)", age);
+   }
+   outClr = C'127,209,127';
+   return StringFormat("HUB_LIVE (%ds)", age);
+}
+
+string Bookmap_TruthfulState(color &outClr) {
+   if (g_of_lastTs == 0) {
+      outClr = C'170,170,170';
+      return "NO_FEED";
+   }
+   int age = (int)(TimeCurrent() - g_of_lastTs);
+   if (age > OF_FRESH_TTL_SEC) {
+      outClr = C'255,200,120';
+      return StringFormat("STALE (%ds)", age);
+   }
+   outClr = C'127,209,127';
+   return StringFormat("LIVE (%ds)", age);
+}
+
+string News_TruthfulState(color &outClr) {
+   if (g_news_lastUpdate == 0) {
+      outClr = C'170,170,170';
+      return "NO_FEED";
+   }
+   int age = (int)(TimeCurrent() - g_news_lastUpdate);
+   if (age > 300) {
+      outClr = C'255,200,120';
+      return StringFormat("STALE (%ds)", age);
+   }
+   outClr = C'127,209,127';
+   return StringFormat("LIVE (%ds)", age);
+}
+
+bool News_FeedIsLive() {
+   if (g_news_lastUpdate == 0) return false;
+   return ((TimeCurrent() - g_news_lastUpdate) <= 300);
+}
+
+// ============================================================
 // DYNAMIC PANEL - Init & Update
 // ============================================================
 void DynPanel_Init() {
    for (int i = 0; i < 3; i++) g_dynNews[i] = "";
+}
+
+// Fast refresh of HUB / BOOKMAP / TPSL rows (every tick + after ZMQ drain).
+void DynPanel_RefreshBridgeAndNews() {
+   DynPanel_UpdateBridgeStatus();
+   DynPanel_UpdateNewsRows();
+}
+
+void DynPanel_UpdateBridgeStatus() {
+   if (!DynamicPanel) return;
+   if (ObjectFind(0, "DYN_BG_V") < 0) return;
+   static string s_hubTxt = "";
+   static string s_bmTxt  = "";
+   bool hubOK = Hub_IsConnectedTruthful();
+   bool bmOK  = Bookmap_IsConnectedTruthful();
+   string hubTxt = hubOK ? "CONNECTED" : "DISCONNECTED";
+   string bmTxt  = bmOK  ? "CONNECTED" : "DISCONNECTED";
+   color hubClr = hubOK ? C'127,209,127' : C'255,91,91';
+   color bmClr  = bmOK  ? C'127,209,127' : C'255,91,91';
+   bool changed = (hubTxt != s_hubTxt || bmTxt != s_bmTxt);
+   s_hubTxt = hubTxt;
+   s_bmTxt  = bmTxt;
+   ObjectSetString(0, "DYN_BG_V", OBJPROP_TEXT, hubTxt);
+   ObjectSetInteger(0, "DYN_BG_V", OBJPROP_COLOR, hubClr);
+   ObjectSetString(0, "DYN_BM_V", OBJPROP_TEXT, bmTxt);
+   ObjectSetInteger(0, "DYN_BM_V", OBJPROP_COLOR, bmClr);
+   string tpsl = IsTPSL_AI() ? "AI" : "NATIVE";
+   ObjectSetString(0, "DYN_TP_V", OBJPROP_TEXT, tpsl);
+   if (changed) ChartRedraw(0);
 }
 
 void DynPanel_Update() {
@@ -42358,15 +43287,27 @@ void DynPanel_Update() {
    color modeClr;
    string modeName = OBL_OperatingMode(modeClr);
    string tpsl     = IsTPSL_AI() ? "AI" : "NATIVE";
-   string bridge   = g_BridgeConnected ? "CONNECTED" : "DISCONNECTED";
-   // UI fix: BRIDGE label always WHITE — green/red coloring removed per spec.
-   color  bridgeC  = clrWhite;
+   // ITER 43 — BINARY TRUTHFUL HUB / BOOKMAP / ACCOUNT.
+   //   Per user spec: panel rows must show ONLY CONNECTED or
+   //   DISCONNECTED (no SOCKET_READY shown as positive, no "(Ns)"
+   //   age suffix). Internal granular state remains available via
+   //   Hub_TruthfulState() for logs / debugging.
+   bool hubOK  = Hub_IsConnectedTruthful();
+   bool bmOK   = Bookmap_IsConnectedTruthful();
+   string hubStateTxt = hubOK ? "CONNECTED" : "DISCONNECTED";
+   string bmStateTxt  = bmOK  ? "CONNECTED" : "DISCONNECTED";
+   color  hubClr      = hubOK ? C'127,209,127' : C'255,91,91';
+   color  bmClr       = bmOK  ? C'127,209,127' : C'255,91,91';
    Panel_MakeLabel("DYN_MO_K", CORNER_LEFT_UPPER, x,        y, "MODE",      KEY_CLR, 9);
    Panel_MakeLabel("DYN_MO_V", CORNER_LEFT_UPPER, x + 100,  y, modeName,    VAL_CLR, 9);  y += DY;
    Panel_MakeLabel("DYN_TP_K", CORNER_LEFT_UPPER, x,        y, "TPSL MODE", KEY_CLR, 9);
    Panel_MakeLabel("DYN_TP_V", CORNER_LEFT_UPPER, x + 100,  y, tpsl,        VAL_CLR, 9);  y += DY;
-   Panel_MakeLabel("DYN_BG_K", CORNER_LEFT_UPPER, x,        y, "BRIDGE",    KEY_CLR, 9);
-   Panel_MakeLabel("DYN_BG_V", CORNER_LEFT_UPPER, x + 100,  y, bridge,      bridgeC, 9);
+   Panel_MakeLabel("DYN_BG_K", CORNER_LEFT_UPPER, x,        y, "HUB",       KEY_CLR, 9);
+   Panel_MakeLabel("DYN_BG_V", CORNER_LEFT_UPPER, x + 100,  y, hubStateTxt, hubClr,  9); y += DY;
+   Panel_MakeLabel("DYN_BM_K", CORNER_LEFT_UPPER, x,        y, "BOOKMAP",   KEY_CLR, 9);
+   Panel_MakeLabel("DYN_BM_V", CORNER_LEFT_UPPER, x + 100,  y, bmStateTxt,  bmClr,   9);
+   if (ObjectFind(0, "DYN_AS_K") >= 0) ObjectDelete(0, "DYN_AS_K");
+   if (ObjectFind(0, "DYN_AS_V") >= 0) ObjectDelete(0, "DYN_AS_V");
    y += DY + SEC_GAP;
 
    // ── SECTION 5: PERFORMANCE ─────────────────────────────────────────
@@ -42385,14 +43326,34 @@ void DynPanel_Update() {
    y += DY + SEC_GAP;
 
    // ── SECTION 6: NEWS (above STRATEGY, exactly as spec) ──────────────
+   // ITER 43 — NEWS PANEL FIX per user spec:
+   //   • REMOVED the synthetic "LIVE (Ns)" status badge next to the
+   //     NEWS header — it was treated as a stand-in for actual news
+   //     content. The 3 rows directly show the latest live news, OR
+   //     a clear disconnected/no-live-news/stale message.
+   //   • Never fabricate fake news. Never show stale headlines as if
+   //     they were fresh.
+   if (!g_zmq_is_master) OBL_ReadNewsPanelFile();
    Panel_MakeLabel("DYN_NEWS_H", CORNER_LEFT_UPPER, x, y, "NEWS", KEY_CLR, 9);
    ObjectSetString(0, "DYN_NEWS_H", OBJPROP_FONT, "Arial Bold");
+   if (ObjectFind(0, "DYN_NEWS_S") >= 0) ObjectDelete(0, "DYN_NEWS_S");
    y += DY;
+   bool hasLines = (StringLen(g_dynNews[0]) > 0 || StringLen(g_dynNews[1]) > 0 ||
+                    StringLen(g_dynNews[2]) > 0);
+   bool newsShow = hasLines;
+   string newsBadMsg = "NO LIVE NEWS";
+   if (!hubOK) newsBadMsg = "NEWS DISCONNECTED (hub down)";
+   else if (!News_FeedIsLive() && !hasLines) newsBadMsg = "NEWS FEED STALE";
    for (int n = 0; n < 3; n++) {
-      string nTxt = (StringLen(g_dynNews[n]) > 0) ? g_dynNews[n] : "—";
+      string nTxt;
+      if (newsShow) {
+         nTxt = (StringLen(g_dynNews[n]) > 0) ? OBL_CleanNewsDisplayText(g_dynNews[n]) : "—";
+      } else {
+         nTxt = (n == 0 ? newsBadMsg : "");
+      }
       if (StringLen(nTxt) > 40) nTxt = StringSubstr(nTxt, 0, 40) + "…";
       Panel_MakeLabel("DYN_NEWS_" + IntegerToString(n), CORNER_LEFT_UPPER,
-                      x, y, nTxt, VAL_CLR, 8);
+                      x, y, nTxt, newsShow ? VAL_CLR : C'170,170,170', 9);
       y += DY - 2;
    }
    y += SEC_GAP;
@@ -51630,6 +52591,17 @@ int Staging_SubmitLadder(string owner, int dir, double baseEntry,
    //   non-Grid owners. User contract: "i lotti devono essere quelli
    //   impostati da input double ManualLot". Grid keeps its progression.
    double levelLotsFixed = NormalizeLotToMarket(Active_ManualLot());
+   // ITER 39.7 — DIAGNOSTIC: log exact lot resolution per ladder so we
+   //   can see if ManualLot input is being honoured. If you see
+   //   ManualLot=0.65 here while panel shows 0.10, the input override
+   //   is upstream (broker template / preset / .set file).
+   static datetime __lot_diagLog = 0;
+   if (TimeCurrent() - __lot_diagLog >= 60) {
+      __lot_diagLog = TimeCurrent();
+      PrintFormat("[Ladder][LOT-DIAG] %s sym=%s owner=%s ManualLot_input=%.4f Active_ManualLot()=%.4f levelLotsFixed=%.4f totalLots_arg=%.4f",
+                  Symbol(), Symbol(), owner, ManualLot,
+                  Active_ManualLot(), levelLotsFixed, totalLots);
+   }
    for (int i = 0; i < loopMax; i++) {
       double levelLots;
       if (owner == "Grid") {

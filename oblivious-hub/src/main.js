@@ -29,9 +29,9 @@ const VpsProfileStore = require("./services/VpsProfileStore");
 const passwordPrompt = require("./security/password-prompt");
 
 const HUB_HOST     = "127.0.0.1";
-const ZMQ_REQ_PORT = +process.env.ZMQ_REQ_PORT  || 5555;
-const ZMQ_PUB_PORT = +process.env.ZMQ_PUB_PORT  || 5556;
-const ZMQ_PULL_PORT= +process.env.ZMQ_PULL_PORT || 5557;
+const ZMQ_REQ_PORT = +process.env.ZMQ_REQ_PORT  || 5565;
+const ZMQ_PUB_PORT = +process.env.ZMQ_PUB_PORT  || 5566;
+const ZMQ_PULL_PORT= +process.env.ZMQ_PULL_PORT || 5567;
 const BOOKMAP_WS_PORT = +process.env.BOOKMAP_WS_PORT || 8081;
 
 // SecureBoot resolution: each of `config.enc`, `license.lic`, `public_key.pem`
@@ -83,6 +83,22 @@ function resolveSearchDirs() {
 let mainWindow = null;
 let services   = null;
 
+/** Push full service snapshots to renderer (fixes empty UI after Hub restart). */
+function pushRendererSnapshot() {
+  if (!mainWindow || mainWindow.isDestroyed() || !services) return;
+  const { zmq, newsEngine, providerRouter, bookmap, decision } = services;
+  try {
+    mainWindow.webContents.send("hub:bridge",    zmq.snapshot());
+    mainWindow.webContents.send("hub:news",      newsEngine.snapshot());
+    mainWindow.webContents.send("hub:providers", providerRouter.snapshot());
+    mainWindow.webContents.send("hub:bookmap",   bookmap.snapshot());
+    mainWindow.webContents.send("hub:decision",  decision.snapshot());
+    mainWindow.webContents.send("hub:secure",    secureBootSnapshot);
+  } catch (err) {
+    console.warn("[Hub] pushRendererSnapshot:", err.message);
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1680,
@@ -101,8 +117,12 @@ function createWindow() {
     },
   });
   mainWindow.removeMenu();
+  mainWindow.webContents.on("did-finish-load", () => pushRendererSnapshot());
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
-  mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.show();
+    pushRendererSnapshot();
+  });
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
@@ -185,12 +205,31 @@ async function bootServices() {
     decision,
     newsEngine,
     providerRouter,
+    bookmap,
     telemetry,
   });
 
   await newsEngine.start();
   bookmap.start();
   await zmq.start();
+  try {
+    const newsSnap = newsEngine.snapshot();
+    if (newsSnap?.upcoming?.length) zmq.publishNews(newsSnap);
+  } catch (_) {}
+
+  // Hub → EA heartbeat on PUB :5556 (oblivious.heartbeat). Without this the
+  // EA never sets g_ai_lastHeartbeat and both panels show HUB DISCONNECTED.
+  const HEARTBEAT_MS = 2000;
+  const _newsHbExtra = () => {
+    try {
+      const snap = newsEngine.snapshot();
+      return snap?.upcoming?.length ? zmq.newsPanelFromSnapshot(snap) : {};
+    } catch (_) { return {}; }
+  };
+  zmq.publishHeartbeat(_newsHbExtra());
+  const _hbTimer = setInterval(() => {
+    try { zmq.publishHeartbeat(_newsHbExtra()); } catch (_) {}
+  }, HEARTBEAT_MS);
 
   // Wire DecisionEngine command publication through ZmqBridge.
   decision.setPublishCommand((payload) => zmq.publishCommand(payload));
@@ -200,6 +239,14 @@ async function bootServices() {
     zmq.publishNews(snapshot);
     telemetry.emit("hub:news",       newsEngine.snapshot());
   });
+  // Re-publish news periodically so every EA chart receives panel lines
+  // (PUB slow-joiner + multi-chart slaves reading the common file).
+  setInterval(() => {
+    try {
+      const snap = newsEngine.snapshot();
+      if (snap?.upcoming?.length) zmq.publishNews(snap);
+    } catch (_) {}
+  }, 60_000);
   bookmap.on("snapshot", (snap) => {
     zmq.publishBookmap(snap);
     decision.onBookmap(snap);
@@ -209,11 +256,16 @@ async function bootServices() {
   // Stream-3 fast-path: every fresh per-symbol orderflow decision is
   // forwarded RAW to the EA (topic `oblivious.decision`) so the MQ4
   // side can react without first parsing the heavy `bookmap` snapshot.
+  const _decPubLast = {};
   bookmap.on("decision", (frame) => {
+    const sym = frame?.symbol || "?";
+    const now = Date.now();
+    if (now - (_decPubLast[sym] || 0) < 500) return;
+    _decPubLast[sym] = now;
     try { zmq.publishDecision(frame); } catch (_) {}
   });
-  zmq.on("context_push", (msg) => {
-    decision.onContextPush(msg);
+  zmq.on("context_push", (ctx) => {
+    decision.onContextPush(ctx);
     // Push instant bridge snapshot so Account Matrix / Positions / chart
     // react without waiting for the 1Hz tick.
     telemetry.emit("hub:bridge", zmq.snapshot());
@@ -270,16 +322,16 @@ async function bootServices() {
       `Next: ${top.country || top.cur || ""} ${top.title || top.event || ""} in ${eta}m [${impact}]`);
   });
   // EA context_push: heartbeat (5s rate-limited) + per-position diff
-  zmq.on("context_push", (msg) => {
-    const ctx = (msg && msg.context) || msg || {};
-    const sym = ctx.sym || ctx.symbol || "";
+  zmq.on("context_push", (ctx) => {
+    const c = ctx || {};
+    const sym = c.sym || c.symbol || "";
     const now = Date.now();
     if (sym && now - _lastEaTs > 5_000) {
       _lastEaTs = now;
       telemetry.log("info", "EA",
-        `Context ${sym} · bal $${(+ctx.balance || 0).toFixed(2)} · eq $${(+ctx.equity || 0).toFixed(2)} · spread ${ctx.spread ?? "?"}`);
+        `Context ${sym} · bal $${(+c.balance || 0).toFixed(2)} · eq $${(+c.equity || 0).toFixed(2)} · spread ${c.spread ?? "?"}`);
     }
-    const positions = Array.isArray(ctx.positions) ? ctx.positions : [];
+    const positions = Array.isArray(c.positions) ? c.positions : [];
     const fp = positions.map((p) => `${p.ticket}:${p.tpsl_stage || ""}`).join("|");
     if (fp !== _lastPosFp) {
       _lastPosFp = fp;
@@ -386,12 +438,14 @@ function registerIpc() {
       // events don't reach 10 rows.
       const mirrors = [
         "https://nfs.faireconomy.media/ff_calendar_thisweek.csv",
+        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.csv",
       ];
       let text = "";
       for (const url of mirrors) {
         try {
+          const bustUrl = `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
           text = await new Promise((res, rej) => {
-            const u = new URL(url);
+            const u = new URL(bustUrl);
             const req = https.request({
               host: u.hostname, path: u.pathname + u.search, method: "GET",
               headers: {
@@ -814,6 +868,7 @@ app.whenReady().then(async () => {
     services = await bootServices();
   } catch (err) {
     console.error("[Hub] boot failed:", err);
+    try { await services?.zmq?.stop?.(); } catch (_) {}
     app.exit(1);
     return;
   }

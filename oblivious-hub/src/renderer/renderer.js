@@ -71,6 +71,9 @@ function escapeHtml(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
+function hasBridgeContext(ctx) {
+  return !!(ctx && (ctx.balance != null || ctx.account_id != null || ctx.equity != null));
+}
 
 // =====================================================================
 // ACCOUNT MATRIX
@@ -78,7 +81,9 @@ function escapeHtml(s) {
 function paintAccount() {
   const ctx = state.bridge.lastContext || {};
   const repBound = !!state.bridge.repBound;
-  const connected = repBound && !!state.bridge.lastPushTs;
+  const hasCtx = hasBridgeContext(ctx);
+  const connected = repBound && !!state.bridge.lastPushTs && hasCtx;
+  const waiting = repBound && !hasCtx;
   const rows = [
     { k: "Account ID",    v: ctx.account_id     ?? ctx.account ?? "—" },
     { k: "Broker / Server", v: ctx.broker || ctx.server
@@ -91,6 +96,8 @@ function paintAccount() {
     { k: "Spread",        v: ctx.spread != null ? `${ctx.spread} pips` : "—" },
     { k: "Status",        v: connected
         ? `<span class="kv-pill"><span class="dot dot-online"></span><span class="kv-green">CONNECTED</span></span>`
+        : waiting
+        ? `<span class="kv-pill"><span class="dot dot-warn"></span><span>WAITING EA DATA</span></span>`
         : `<span class="kv-pill"><span class="dot dot-down"></span><span class="kv-red">DISCONNECTED</span></span>`,
       raw: true },
   ];
@@ -801,8 +808,8 @@ function paintEngine() {
   const ctx = state.bridge.lastContext || {};
   const bm  = state.bookmap || {};
   const br  = state.bridge || {};
-  const tpslMode = ctx.tpsl_mode || ctx.tpslMode || ctx.TPSLMode || "Native";
-  const ex4 = br.repBound && br.pullBound;
+  const ex4 = br.repBound && br.pullBound && hasBridgeContext(ctx);
+  const tpslMode = ex4 ? "AI" : (ctx.tpsl_mode || ctx.tpslMode || ctx.TPSLMode || "Native");
   const newsOk = !!(state.news && (state.news.upcoming?.length || state.news.length));
   const pillOn  = `<span class="kv-pill"><span class="dot dot-online"></span><span class="kv-green">CONNECTED</span></span>`;
   const pillOff = `<span class="kv-pill"><span class="dot dot-down"></span><span class="kv-red">DISCONNECTED</span></span>`;
@@ -921,6 +928,10 @@ function renderAll() {
   paintSmartLog();
   paintEngine();
   paintProviders();
+}
+function safeRenderAll() {
+  try { renderAll(); }
+  catch (e) { console.error("[renderAll]", e); }
 }
 
 // =====================================================================
@@ -1506,16 +1517,10 @@ async function boot() {
     document.body.innerHTML = '<div style="padding:40px;color:#ff5577;font-family:monospace">preload missing — hub API unavailable</div>';
     return;
   }
-  await initInteractions();
 
-  const snap = await window.hub.getSnapshot();
-  if (snap) {
-    Object.assign(state, snap);
-    renderAll();
-  }
-
-  // Push subscriptions
-  window.hub.on("hub:bridge",    (p) => { state.bridge    = p; renderAll(); });
+  // Push subscriptions — register before slow init so early main-process
+  // snapshots (did-finish-load / 1Hz tick) are not dropped.
+  window.hub.on("hub:bridge",    (p) => { state.bridge    = p; safeRenderAll(); });
   window.hub.on("hub:news",      (p) => {
     // Differ from `news_query` ctx (block/impact/next_event):
     // if it's the per-symbol news ctx, ignore for table; only refresh via snapshot poll.
@@ -1583,8 +1588,19 @@ async function boot() {
       const fresh = await window.hub.getSnapshot();
       if (fresh) Object.assign(state, fresh);
     } catch (_) { /* noop */ }
-    renderAll();
+    safeRenderAll();
   }, 60_000);
+
+  try { await initInteractions(); }
+  catch (e) { console.error("[boot] initInteractions:", e); }
+
+  try {
+    const snap = await window.hub.getSnapshot();
+    if (snap) {
+      Object.assign(state, snap);
+      safeRenderAll();
+    }
+  } catch (e) { console.error("[boot] getSnapshot:", e); }
 }
 
-boot();
+boot().catch((e) => console.error("[boot]", e));
